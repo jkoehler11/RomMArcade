@@ -317,6 +317,8 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(open(target, "rb").read(), b"NES-ROM-DATA")
         _, installs = self.call("/api/installs")
         self.assertTrue(any(i["rom_id"] == 180 for i in installs["installs"]))
+        _, detail = self.call("/api/roms/180")
+        self.assertIsNotNone(detail["rom"]["installed"])
 
     def test_06_play_dry_run_and_spawn(self):
         status, payload = self.call("/api/play", "POST", {"rom_id": 180, "dry_run": True})
