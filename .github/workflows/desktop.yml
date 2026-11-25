@@ -16,9 +16,9 @@ jobs:
             label: Linux x86_64
             artifact: RomMArcade-linux-x86_64
             path: dist/RomMArcade
-          - os: macos-14
-            label: macOS arm64
-            artifact: RomMArcade-macos-arm64
+          - os: macos-15-intel
+            label: macOS x86_64
+            artifact: RomMArcade-macos-x86_64
             path: dist/RomMArcade.app
           - os: windows-2022
             label: Windows x64
