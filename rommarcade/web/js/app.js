@@ -22,6 +22,7 @@ const state = {
   pendingPlay: new Map(),
   autoPlay: null,
   trayHidden: 0,
+  biosTimer: null,
   timer: null,
   setup: null,
   sort: {},
@@ -935,6 +936,7 @@ async function pollDownloads() {
         if (current.name !== "settings" && current.name !== "game") route();
       } else if (job.kind === "bios") {
         toast(`BIOS ${job.name} saved`, "good");
+        scheduleBiosRefresh();
       }
     }
     if (job.status === "error" && !state.seenErrors.has(job.id)) {
@@ -952,6 +954,14 @@ async function pollDownloads() {
   }
   syncInstallState();
   renderTray();
+}
+
+function scheduleBiosRefresh() {
+  clearTimeout(state.biosTimer);
+  state.biosTimer = setTimeout(() => {
+    const current = parseRoute();
+    if (current.name === "game" || current.name === "platform") route();
+  }, 600);
 }
 
 function renderTray() {
