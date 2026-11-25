@@ -713,7 +713,6 @@ async function downloadBios(platformId, button) {
         batch.total += 1;
       }
       state.biosBatch = batch;
-      toast(`Downloading ${jobs.length} BIOS file${jobs.length === 1 ? "" : "s"}`, "info");
       state.trayHidden = 0;
       await pollDownloads();
     }
