@@ -5,6 +5,9 @@ on:
   push:
     tags: ["v*"]
 
+permissions:
+  contents: read
+
 jobs:
   build:
     name: ${{ matrix.label }}
@@ -15,15 +18,12 @@ jobs:
           - os: ubuntu-24.04
             label: Linux x86_64
             artifact: RomMArcade-linux-x86_64
-            path: dist/RomMArcade
           - os: macos-15-intel
             label: macOS x86_64
             artifact: RomMArcade-macos-x86_64
-            path: dist/RomMArcade.app
           - os: windows-2022
             label: Windows x64
             artifact: RomMArcade-windows-x64
-            path: dist/RomMArcade
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -48,11 +48,69 @@ jobs:
         if: runner.os == 'Linux'
         run: python -m pip install 'pygobject==3.50.0'
 
-      - name: Build
+      - name: Build desktop bundle
         run: python packaging/build_desktop.py
 
-      - uses: actions/upload-artifact@v4
+      - name: Build AppImage
+        if: runner.os == 'Linux'
+        run: bash packaging/build_appimage.sh
+
+      - name: Build installer package
+        if: runner.os == 'macOS'
+        run: bash packaging/build_pkg.sh
+
+      - name: Build Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          $version = python -c "import rommarcade; print(rommarcade.__version__)"
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$version" "packaging\windows\RomMArcade.iss"
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: ${{ matrix.path }}
+          path: |
+            dist/*.AppImage
+            dist/*.pkg
+            dist/*.exe
           if-no-files-found: error
+
+  release:
+    name: Publish executables
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+
+      - name: Attach executables to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          files="$(find release -type f \( -name '*.AppImage' -o -name '*.exe' -o -name '*.pkg' \) -print)"
+          if [ -z "$files" ]; then
+            echo "No installer artifacts found" >&2
+            exit 1
+          fi
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "RomMArcade $TAG" --generate-notes
+          fi
+          # Release downloads are installers only; drop archives from older runs.
+          for asset in $(gh release view "$TAG" --json assets --jq '.assets[].name'); do
+            case "$asset" in
+              *.zip|*.tar|*.tar.gz|*.tgz|*.sha256)
+                gh release delete-asset "$TAG" "$asset" --yes
+                ;;
+            esac
+          done
+          # shellcheck disable=SC2086
+          gh release upload "$TAG" $files --clobber

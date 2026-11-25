@@ -12,6 +12,8 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))
 ENTRY = os.path.join(ROOT, "packaging", "desktop_entry.py")
+ICON_ICO = os.path.join(ROOT, "packaging", "rommarcade.ico")
+ICON_ICNS = os.path.join(ROOT, "packaging", "rommarcade.icns")
 
 datas = collect_data_files(
     "rommarcade",
@@ -67,6 +69,7 @@ exe = EXE(
     strip=False,
     upx=False,
     console=False,
+    icon=ICON_ICO if sys.platform == "win32" else None,
 )
 
 coll = COLLECT(
@@ -82,7 +85,7 @@ if sys.platform == "darwin":
     app = BUNDLE(
         coll,
         name="RomMArcade.app",
-        icon=None,
+        icon=ICON_ICNS,
         bundle_identifier="org.koehlerkilleen.rommarcade",
         info_plist={
             "NSHighResolutionCapable": True,
