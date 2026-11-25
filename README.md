@@ -28,7 +28,8 @@ RomM server  ──HTTP──▶  RomMArcade  ──files──▶  ~/Emulation/
   game file, so the shelf is the games — not the emulator payload.
 - **EmuDeck installs the emulators.** RomMArcade never installs or updates emulators itself. It
   detects EmuDeck, maps each system to a launcher, and opens EmuDeck when something is missing.
-  The integration can be switched off in **Settings → EmuDeck**; with it off RomMArcade is a
+  If a launcher has no EmuDeck installer behind it, the game page links to the emulator's official
+  site instead. The integration can be switched off in **Settings → EmuDeck**; with it off RomMArcade is a
   browse-only RomM library.
 - **EmuDeck-native installs.** ROMs go to the EmuDeck folder for their platform. Multi-file ROMs
   arrive as a folder. BIOS downloads keep RomM's `bios/…` layout inside `~/Emulation/bios`.
