@@ -23,6 +23,13 @@ RomM server  ──HTTP──▶  RomMArcade  ──files──▶  ~/Emulation/
   a pasted client token or HTTP Basic credentials are also supported.
 - **A library built for a couch.** Platform rails, cover grids, search, install state, sizes, and
   a game page that says exactly where the ROM will land and what will open it.
+- **Games only, by design.** RomM may index emulator scripts, shader caches, patches and licence
+  files that sit beside a ROM. RomMArcade filters those out and shows only entries with a real
+  game file, so the shelf is the games — not the emulator payload.
+- **EmuDeck installs the emulators.** RomMArcade never installs or updates emulators itself. It
+  detects EmuDeck, maps each system to a launcher, and opens EmuDeck when something is missing.
+  The integration can be switched off in **Settings → EmuDeck**; with it off RomMArcade is a
+  browse-only RomM library.
 - **EmuDeck-native installs.** ROMs go to the EmuDeck folder for their platform. Multi-file ROMs
   arrive as a folder. BIOS downloads keep RomM's `bios/…` layout inside `~/Emulation/bios`.
 - **EmuDeck-native launches.** RomMArcade runs the same launcher scripts EmuDeck writes
@@ -120,8 +127,12 @@ RomMArcade reads `~/.config/EmuDeck/settings.json` for `storagePath` and expects
 
 Platform folders are matched on RomM's `fs_slug` first, then by known aliases (`ngc → gc`,
 `3ds → n3ds`, `dc → dreamcast`, `sega32 → sega32x`, `ps1 → psx`, …), then by a normalized name.
-Every mapping is visible and editable in **Settings → Emulators**: folder, launcher, and libretro
+Every mapping is visible and editable in **Settings → EmuDeck**: folder, launcher, and libretro
 core per platform. Overrides live in the config, not in EmuDeck.
+
+**The on/off switch.** **Settings → EmuDeck** (or the EmuDeck page) toggles the whole integration.
+With it off, install, play, BIOS, and launcher actions are refused by the API; the library remains
+browsable. The default is on.
 
 Launcher choice follows the system: standalone emulators where EmuDeck installs them (Dolphin,
 Cemu, DuckStation, PCSX2, PPSSPP, melonDS, Azahar, Flycast, Xenia), RetroArch otherwise. For
@@ -139,13 +150,13 @@ hands off files it did not create.
 ## Development
 
 ```bash
-python3 -m unittest tests.test_integration -v   # 17 tests, no network
+python3 -m unittest tests.test_integration -v   # 19 tests, no network
 ROMARCADE_HOME=/tmp/rommarcade-dev python3 -m rommarcade serve --port 8791
 ```
 
 The test suite starts a fake RomM server and a throwaway EmuDeck tree, then exercises pairing,
-browsing, cover caching, installs (single-file and multi-file zip), BIOS, launching, and the
-deep-link queue end to end.
+browsing, the games-only filter, cover caching, installs (single-file and multi-file zip), BIOS,
+launching, the EmuDeck on/off switch, and the deep-link queue end to end.
 
 Layout:
 

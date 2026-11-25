@@ -58,6 +58,7 @@ export const api = {
   rom: (id) => request(`/api/roms/${Number(id)}`, { timeout: 60000 }),
   firmware: (platformId) => request(`/api/firmware/${Number(platformId)}`),
   emudeck: () => request("/api/emudeck", { timeout: 60000 }),
+  openInstaller: () => request("/api/emudeck/open-installer", { method: "POST", body: {} }),
   mapPlatform: (body) => request("/api/emudeck/mapping", { method: "POST", body }),
   installs: () => request("/api/installs"),
   repairInstalls: () => request("/api/installs/repair", { method: "POST" }),

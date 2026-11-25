@@ -224,8 +224,9 @@ const NO_LOGO_LABELS = { gba: "GBA", n64: "N64", "3ds": "3DS", n3ds: "3DS", ps4:
 
 export function platformCard(platform, active = false) {
   const local = platform.local || {};
-  const roms = Number(platform.rom_count) || 0;
-  const mapped = Boolean(local.exists && local.launcher);
+  const roms = Number(platform.game_count ?? platform.rom_count) || 0;
+  const enabled = local.enabled !== false;
+  const mapped = Boolean(enabled && local.exists && local.launcher);
   const slug = String(platform.fs_slug || platform.slug || "").toLowerCase();
   const normalized = Boolean(platform.logo_normalized);
   const boost = normalized ? 1 : (LOGO_BOOST[slug] || 1.55);
@@ -258,7 +259,7 @@ export function platformCard(platform, active = false) {
         h("div", { class: "plat-sub" },
           h("span", null, `${roms} game${roms === 1 ? "" : "s"}`),
           local.installed_count ? h("span", { class: "local" }, `${local.installed_count} local`) : null,
-          h("span", { class: `plat-state ${mapped ? "ok" : "warn"}`, title: mapped ? "Mapped in EmuDeck" : "No EmuDeck mapping" }),
+          enabled ? h("span", { class: `plat-state ${mapped ? "ok" : "warn"}`, title: mapped ? "Mapped in EmuDeck" : "No EmuDeck mapping" }) : null,
         ),
       ),
       h("span", { class: "plat-go", "aria-hidden": "true" }, icon("arrow")),

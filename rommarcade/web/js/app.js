@@ -210,7 +210,7 @@ async function renderLibrary(token) {
   ]);
   if (token !== state.renderToken) return;
   const roms = recent.items || [];
-  const withGames = platforms.filter((p) => Number(p.rom_count) > 0);
+  const withGames = platforms.filter((p) => p.is_game_platform !== false && Number(p.game_count ?? p.rom_count) > 0);
   const featured = roms.find((r) => r.installed) || roms[0] || installs[0];
 
   const frag = document.createDocumentFragment();
@@ -256,7 +256,7 @@ function heroBlock(rom, localCount) {
       h("div", { class: "hero-meta" },
         h("span", null, rom.platform_name || rom.platform_fs_slug || "RomM"),
         rom.size ? h("span", null, fmtBytes(rom.size)) : null,
-        localCount ? h("span", null, h("b", null, String(localCount)), " installed locally") : null,
+        localCount ? h("span", null, h("b", null, String(localCount)), " games ready on this PC") : null,
       ),
       h("div", { class: "hero-actions" },
         installed
@@ -282,8 +282,20 @@ function platformRail(platforms, activeSlug) {
 
 function emudeckStrip(platforms) {
   const emu = state.status?.emudeck || {};
-  const mapped = platforms.filter((p) => p.local?.exists && p.local?.launcher).length;
+  const enabled = emu.enabled !== false;
+  const mapped = enabled ? platforms.filter((p) => p.local?.exists && p.local?.launcher).length : 0;
   const detected = Boolean(emu.detected);
+  if (!enabled) {
+    return h("a", { class: "emu-strip missing", href: "#/emudeck" },
+      h("span", { class: "glyph" }, icon("alert")),
+      h("span", { class: "txt" },
+        h("span", { class: "t" }, "EmuDeck integration off"),
+        h("span", { class: "s" }, "The library is games-only. Turn it on to install into EmuDeck and launch games."),
+      ),
+      h("span", { class: "badge warn" }, "Off"),
+      h("span", { class: "go" }, icon("arrow")),
+    );
+  }
   return h("a", { class: `emu-strip ${detected ? "" : "missing"}`, href: "#/emudeck" },
     h("span", { class: "glyph" }, icon(detected ? "cart" : "alert")),
     h("span", { class: "txt" },
@@ -326,19 +338,21 @@ async function renderPlatform(slug, token) {
   if (token !== state.renderToken) return;
 
   const local = platform.local || {};
-  const mapped = Boolean(local.exists && local.launcher);
+  const enabled = local.enabled !== false;
+  const gameCount = Number(platform.game_count ?? platform.rom_count) || 0;
+  const mapped = Boolean(enabled && local.exists && local.launcher);
   const head = h("div", { class: "page-head" },
     h("div", { class: "grow" },
       h("p", { class: "eyebrow" }, "Platform"),
       h("h1", { class: "page-title" }, platform.display_name || platform.name || slug),
       h("p", { class: "page-sub" },
-        `${platform.rom_count} game${platform.rom_count === 1 ? "" : "s"} on the server`,
+        `${gameCount} game${gameCount === 1 ? "" : "s"} in the library`,
         local.installed_count ? ` · ${local.installed_count} installed here` : "",
         mapped ? ` · ${local.launcher_name}${local.core ? " / " + local.core : ""}` : "",
       ),
     ),
     h("div", { class: "page-actions" },
-      Number(platform.firmware_count) > 0
+      enabled && Number(platform.firmware_count) > 0
         ? h("button", { class: "btn", onClick: (event) => downloadBios(platform.id, event.currentTarget) }, icon("download"), "Download BIOS")
         : null,
       h("select", {
@@ -353,19 +367,26 @@ async function renderPlatform(slug, token) {
   );
 
   const body = [head];
-  if (!local.exists) {
+  if (!enabled) {
+    body.push(banner({
+      tone: "warn",
+      title: "EmuDeck integration is off",
+      text: "Games are still browsable. Turn the integration on to install and launch them through EmuDeck.",
+      action: h("a", { class: "btn small", href: "#/emudeck" }, "Open EmuDeck settings"),
+    }));
+  } else if (!local.exists) {
     body.push(banner({
       tone: "warn",
       title: "No EmuDeck folder for this platform",
       text: `RomMArcade could not match ${platform.fs_slug} to a folder under ${state.status?.emudeck?.root || "EmuDeck"}. Games can be browsed, but installs need a folder.`,
-      action: h("a", { class: "btn small", href: "#/settings/emulators" }, "Set the mapping"),
+      action: h("a", { class: "btn small", href: "#/emudeck" }, "Set the mapping"),
     }));
   } else if (!local.launcher) {
     body.push(banner({
       tone: "warn",
       title: "No launcher for this platform",
-      text: "The EmuDeck folder exists, but no installed emulator launcher maps to this system. Install an emulator in EmuDeck or pick a launcher in Settings.",
-      action: h("a", { class: "btn small", href: "#/settings/emulators" }, "Pick a launcher"),
+      text: "The EmuDeck folder exists, but no installed emulator launcher maps to this system. Install it in EmuDeck or pick a launcher.",
+      action: h("a", { class: "btn small", href: "#/emudeck" }, "Pick a launcher"),
     }));
   }
   body.push(data.items?.length
@@ -421,7 +442,10 @@ async function renderGame(id, token) {
   if (!rom.cover) art.append(h("div", { class: "cover-fallback" }, icon("cart"), h("div", { class: "name" }, rom.name)));
 
   const actions = [];
-  if (installed) {
+  const emuOn = mapping.enabled !== false;
+  if (!emuOn) {
+    actions.push(h("a", { class: "btn", href: "#/emudeck" }, icon("settings"), "Turn on EmuDeck integration"));
+  } else if (installed) {
     actions.push(h("button", { class: "btn primary", onClick: () => playRom(rom.id) }, icon("play"), "Play"));
     actions.push(h("span", { class: "chip ok" }, icon("check"), "Installed"));
   } else if (mapping.exists && mapping.launcher) {
@@ -457,10 +481,12 @@ async function renderGame(id, token) {
       ),
       h("div", { class: "game-actions" }, actions),
       h("div", { class: "play-via" }, icon("cart"),
-        mapping.launcher
-          ? `Plays through EmuDeck · ${mapping.launcher_name || mapping.launcher}${mapping.core ? " · " + mapping.core : ""}`
-          : "No EmuDeck launcher mapped yet"),
-      missingBios.length
+        !emuOn
+          ? "EmuDeck integration is off — browsing only"
+          : mapping.launcher
+            ? `Plays through EmuDeck · ${mapping.launcher_name || mapping.launcher}${mapping.core ? " · " + mapping.core : ""}`
+            : "No EmuDeck launcher mapped yet"),
+      emuOn && missingBios.length
         ? h("div", { class: "bios-banner" },
             icon("alert"),
             h("div", { class: "txt" }, h("b", null, `${missingBios.length} BIOS file${missingBios.length === 1 ? "" : "s"} missing`),
@@ -1074,18 +1100,54 @@ async function renderEmudeck(token) {
   }
   let platforms = [];
   try { platforms = await getPlatforms(); } catch { platforms = []; }
-  const mapped = platforms.filter((p) => Number(p.rom_count) > 0 && p.local?.exists && p.local?.launcher).length;
+  const enabled = emu?.enabled !== false;
+  const mapped = platforms.filter((p) => p.is_game_platform !== false && Number(p.game_count ?? p.rom_count) > 0 && p.local?.exists && p.local?.launcher).length;
   const head = h("div", { class: "page-head" },
     h("div", { class: "grow" },
       h("p", { class: "eyebrow" }, "Integration"),
       h("h1", { class: "page-title" }, "EmuDeck"),
-      h("p", { class: "page-sub" }, "RomMArcade installs into EmuDeck's folders and launches EmuDeck's own scripts. This is the live wiring."),
+      h("p", { class: "page-sub" }, "The library is games only. EmuDeck owns the emulators, the ROM folders and the launchers; RomMArcade hands it the right file."),
     ),
     h("div", { class: "page-actions" },
-      h("span", { class: `chip ${emu?.detected ? "ok" : "warn"}` }, emu?.detected ? "Detected" : "Not found"),
-      h("span", { class: "chip" }, `${mapped} systems mapped`),
+      emudeckSwitch(enabled),
+      h("span", { class: `chip ${enabled ? "ok" : ""}` }, enabled ? "On" : "Off"),
+      enabled ? h("span", { class: `chip ${emu?.detected ? "ok" : "warn"}` }, emu?.detected ? "Detected" : "Not found") : null,
+      enabled ? h("span", { class: "chip" }, `${mapped} systems mapped`) : null,
     ),
   );
+
+  if (!enabled) {
+    mount(viewEl, head, h("div", { class: "settings-body" }, emudeckDisabledCard()));
+    return;
+  }
+
+  const dead = (emu?.launchers || []).filter((launcher) => !launcher.ready);
+  const missing = platforms.filter((p) => p.is_game_platform !== false && Number(p.game_count ?? p.rom_count) > 0 && !p.local?.launcher);
+  const warnings = [];
+  if (!emu?.detected) {
+    warnings.push(h("div", { class: "bios-banner" },
+      icon("alert"),
+      h("div", { class: "txt" }, h("b", null, "EmuDeck was not found"),
+        h("div", null, "Install EmuDeck or point RomMArcade at an existing Emulation folder.")),
+      h("button", { class: "btn small", onClick: openEmudeckInstaller }, icon("external"), "Open EmuDeck"),
+    ));
+  } else if (dead.length) {
+    const deadNames = [...new Set(dead.map((l) => l.name))];
+    warnings.push(h("div", { class: "bios-banner" },
+      icon("alert"),
+      h("div", { class: "txt" }, h("b", null, `${deadNames.length} emulator${deadNames.length === 1 ? "" : "s"} without an app`),
+        h("div", null, `EmuDeck left ${deadNames.join(", ")} behind with no app to run. Install the missing emulators in EmuDeck.`)),
+      h("button", { class: "btn small", onClick: openEmudeckInstaller }, icon("external"), "Open EmuDeck"),
+    ));
+  } else if (missing.length) {
+    warnings.push(h("div", { class: "bios-banner" },
+      icon("alert"),
+      h("div", { class: "txt" }, h("b", null, `${missing.length} game system${missing.length === 1 ? "" : "s"} without an emulator`),
+        h("div", null, "Games on those systems can be browsed but not installed or played until EmuDeck has an emulator for them.")),
+      h("button", { class: "btn small", onClick: openEmudeckInstaller }, icon("external"), "Open EmuDeck"),
+    ));
+  }
+
   const body = h("div", { class: "settings-body" });
   body.append(h("div", { class: "card" },
     h("div", { class: "card-head" },
@@ -1093,15 +1155,71 @@ async function renderEmudeck(token) {
         h("h3", null, "How RomMArcade uses EmuDeck"),
         h("p", { class: "sub" }, "No second emulator setup: the ROMs, launchers and BIOS are the ones EmuDeck already manages."),
       ),
+      h("button", { class: "btn small", onClick: openEmudeckInstaller }, icon("external"), "Open EmuDeck"),
     ),
     h("div", { class: "emu-how" },
       howStep("Install", "Games are written to EmuDeck's ROM folders; multi-file games become a folder.", emu?.roms_root ? `${emu.roms_root}/<system>` : "~/Emulation/roms/<system>"),
       howStep("Play", "The matching EmuDeck launcher runs with the exact ROM path; RetroArch gets -L <core>.", emu?.launchers_root ? `${emu.launchers_root}/<emu>.sh` : "~/Emulation/tools/launchers/<emu>.sh"),
       howStep("BIOS", "RomM firmware is mirrored under EmuDeck's BIOS root, preserving bios/<system>.", emu?.bios_root || "~/Emulation/bios"),
     ),
+    h("p", { class: "hint", style: { marginTop: "12px" } },
+      "Installing or updating an emulator stays in EmuDeck itself — RomMArcade never installs software behind your back."),
   ));
+  if (warnings.length) body.append(...warnings);
   mount(viewEl, head, body);
   await settingsEmulators(body, token);
+}
+
+function emudeckSwitch(enabled) {
+  return h("label", { class: "switch", title: "Toggle EmuDeck integration" },
+    h("input", {
+      type: "checkbox",
+      checked: enabled,
+      onChange: (event) => setEmudeckEnabled(event.target.checked),
+    }),
+    h("span", null, enabled ? "EmuDeck on" : "EmuDeck off"),
+  );
+}
+
+function emudeckDisabledCard() {
+  return h("div", { class: "card" },
+    h("div", { class: "card-head" },
+      h("div", { class: "grow" },
+        h("h3", null, "EmuDeck integration is off"),
+        h("p", { class: "sub" }, "RomMArcade is a pure RomM library browser right now: no installs, no launches, no BIOS downloads. The library still only shows games."),
+      ),
+    ),
+    h("div", { class: "row", style: { marginTop: "4px" } },
+      emudeckSwitch(false),
+      h("div", { class: "spacer" }),
+      h("button", { class: "btn primary", onClick: () => setEmudeckEnabled(true) }, icon("check"), "Turn on EmuDeck integration"),
+    ),
+  );
+}
+
+async function setEmudeckEnabled(enabled) {
+  try {
+    const result = await api.saveConfig({ emudeck: { enabled: Boolean(enabled) } });
+    state.config = result.config;
+    state.status = await api.status();
+    state.platforms = null;
+    state.installs = null;
+    state.emudeck = null;
+    paintServerPill();
+    toast(enabled ? "EmuDeck integration is on" : "EmuDeck integration is off", "good");
+    route();
+  } catch (error) {
+    toast(error.message, "bad");
+  }
+}
+
+async function openEmudeckInstaller() {
+  try {
+    const result = await api.openInstaller();
+    toast(`Opened ${result.path.split("/").pop()}`, "good");
+  } catch (error) {
+    toast(error.message, "bad");
+  }
 }
 
 function howStep(label, text, target) {
@@ -1115,7 +1233,7 @@ function howStep(label, text, target) {
 async function renderSettings(tab, token) {
   const def = ["server", "emulators", "about"].includes(tab) ? tab : "server";
   const tabs = h("nav", { class: "tabs", "aria-label": "Settings" },
-    [["server", "Server", "server"], ["emulators", "Emulators", "cart"], ["about", "About", "grid"]].map(([key, label, glyph]) =>
+    [[ "server", "Server", "server"], ["emulators", "EmuDeck", "cart"], ["about", "About", "grid"]].map(([key, label, glyph]) =>
       h("a", { class: `tab ${def === key ? "active" : ""}`, href: `#/settings/${key}` }, icon(glyph), label)),
   );
   const body = h("div", { class: "settings-body" });
@@ -1320,12 +1438,17 @@ async function settingsEmulators(body, token) {
   }
   if (token !== state.renderToken) return;
   state.emudeck = emu;
+  const enabled = emu.enabled !== false;
+  if (!enabled) {
+    body.append(emudeckDisabledCard());
+    return;
+  }
   const mapping = new Map((emu.platforms || []).map((p) => [p.platform, p]));
   const dirs = emu.rom_dirs || [];
   const launchers = emu.launchers || [];
   const cores = emu.cores || [];
   const rows = platforms
-    .filter((p) => Number(p.rom_count) > 0)
+    .filter((p) => p.is_game_platform !== false && Number(p.game_count ?? p.rom_count) > 0)
     .sort((a, b) => String(a.display_name || a.name).localeCompare(String(b.display_name || b.name)))
     .map((p) => {
       const key = p.fs_slug || p.slug;
@@ -1364,7 +1487,11 @@ async function settingsEmulators(body, token) {
   const emuCard = h("div", { class: "card" },
     h("div", { class: "card-head" },
       h("div", { class: "grow" }, h("h3", null, "EmuDeck"), h("p", { class: "sub" }, "Detected installation and the launchers RomMArcade can hand a ROM to.")),
-      h("button", { class: "btn small", onClick: () => refreshEmudeck() }, icon("refresh"), "Rescan"),
+      h("div", { class: "row" },
+        emudeckSwitch(enabled),
+        h("button", { class: "btn small", onClick: openEmudeckInstaller }, icon("external"), "Open EmuDeck"),
+        h("button", { class: "btn small", onClick: () => refreshEmudeck() }, icon("refresh"), "Rescan"),
+      ),
     ),
     emu.detected
       ? h("div", { class: "emu-status" },

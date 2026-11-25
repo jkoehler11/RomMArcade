@@ -27,7 +27,7 @@ from rommarcade.config import ConfigStore, normalize_url
 from rommarcade.deeplink import DeepLinkQueue, parse_deeplink
 from rommarcade.emudeck import ALIASES, choose_core, find_platform_dir, sanitize_name
 from rommarcade.romm import RomMClient
-from rommarcade.server import App, Server, Handler
+from rommarcade.server import App, Server, Handler, _is_game_rom
 
 TOKEN = "rmm_testtoken"
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
@@ -209,6 +209,14 @@ class UnitTests(unittest.TestCase):
         self.assertEqual(sanitize_name("A/B"), "A-B")
         self.assertEqual(choose_core("nes", {"mesen", "snes9x"}), "mesen")
 
+    def test_game_filter(self):
+        self.assertTrue(_is_game_rom({"platform_fs_slug": "nes", "files": [{"file_name": "1942.zip", "is_top_level": True}]}))
+        self.assertFalse(_is_game_rom({"platform_fs_slug": "emulators", "files": [{"file_name": "azahar.sh", "is_top_level": True}]}))
+        self.assertFalse(_is_game_rom({"platform_fs_slug": "nes", "files": []}))
+        self.assertFalse(_is_game_rom({"platform_fs_slug": "xbox360", "files": [{"file_name": "xenia.sh", "is_top_level": True}]}))
+        self.assertFalse(_is_game_rom({"platform_fs_slug": "xbox360", "files": [{"file_name": "LICENSE", "is_top_level": True}]}))
+        self.assertFalse(_is_game_rom({"platform_fs_slug": "xbox360", "files": [{"file_name": "0b0a5c5c", "is_top_level": False}]}))
+
 
 class IntegrationTests(unittest.TestCase):
     @classmethod
@@ -386,6 +394,21 @@ class IntegrationTests(unittest.TestCase):
         status, payload = self.call("/api/log?lines=5")
         self.assertEqual(status, 200)
         self.assertIsInstance(payload["lines"], list)
+
+    def test_13_emudeck_toggle(self):
+        try:
+            status, payload = self.call("/api/config", "PUT", {"emudeck": {"enabled": False}})
+            self.assertEqual(status, 200)
+            self.assertFalse(payload["config"]["emudeck"]["enabled"])
+            _, status_payload = self.call("/api/status")
+            self.assertFalse(status_payload["emudeck"]["enabled"])
+            _, platforms = self.call("/api/platforms")
+            self.assertFalse(next(p for p in platforms["platforms"] if p["fs_slug"] == "nes")["local"]["enabled"])
+            code, payload = self.call("/api/install", "POST", {"rom_id": 180})
+            self.assertEqual(code, 409)
+            self.assertIn("off", payload["error"].lower())
+        finally:
+            self.call("/api/config", "PUT", {"emudeck": {"enabled": True}})
 
 
 if __name__ == "__main__":

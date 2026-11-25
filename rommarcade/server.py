@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import glob
 import io
 import json
 import mimetypes
@@ -49,6 +50,14 @@ from .state import StateStore, ensure_dirs
 WEB_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 MAX_BODY = 2 * 1024 * 1024
 COVER_LIMIT = 12 * 1024 * 1024
+MAX_LIBRARY = 5000
+TOOL_PLATFORMS = {"emulators", "cloud", "remoteplay"}
+TOOL_EXTENSIONS = {
+    ".sh", ".exe", ".appimage", ".desktop", ".bat", ".cmd", ".py", ".dll", ".so",
+    ".msi", ".dmg", ".pkg", ".deb", ".rpm", ".txt", ".md", ".json", ".xml", ".ini",
+    ".cfg", ".log", ".toml", ".yml", ".yaml", ".lock", ".db", ".sqlite", ".url", ".webloc",
+    ".xpso", ".xsh", ".header", ".gpd", ".d3d12", ".rtv",
+}
 
 
 def _json_bytes(payload: Any) -> bytes:
@@ -152,7 +161,57 @@ class App:
     def active_server(self) -> dict[str, Any] | None:
         return self.config.active_server()
 
+    def emudeck_enabled(self) -> bool:
+        return bool(self.config.get().get("emudeck", {}).get("enabled", True))
+
+    def require_emudeck(self) -> None:
+        if not self.emudeck_enabled():
+            raise HttpError(
+                409,
+                "EmuDeck integration is off. Turn it on in Settings, EmuDeck.",
+            )
+
     # -- RomM data --------------------------------------------------------
+    def library_roms(self) -> list[dict[str, Any]]:
+        """Every visible RomM entry that is actually a game.
+
+        RomM happily scans whatever sits in a platform folder, so an emulator
+        install (xenia.sh, cache/, LICENSE) can appear as a "rom".  The library
+        only takes entries with a real game file; emulator management belongs
+        to EmuDeck, not to the game shelf.
+        """
+        cached = self._cache_get("library", 45)
+        if cached is not None:
+            return cached
+        items: list[dict[str, Any]] = []
+        try:
+            offset = 0
+            while offset < MAX_LIBRARY:
+                data = self.client().roms(limit=500, offset=offset, with_files=True)
+                batch = data.get("items") or []
+                if not batch:
+                    break
+                items.extend(_trim_rom(rom) for rom in batch if _is_game_rom(rom))
+                offset += len(batch)
+                total = int(data.get("total") or 0)
+                if total and offset >= total:
+                    break
+        except RomMError:
+            return []
+        return self._cache_set("library", items)
+
+    def _game_ids(self) -> set[int]:
+        return {int(rom["id"]) for rom in self.library_roms() if rom.get("id") is not None}
+
+    def game_installs(self) -> list[dict[str, Any]]:
+        ids = self._game_ids()
+        return [entry for entry in self.state.installs() if int(entry.get("rom_id") or 0) in ids]
+
+    def game_history(self, limit: int = 30) -> list[dict[str, Any]]:
+        ids = self._game_ids()
+        history = [entry for entry in self.state.history(100) if int(entry.get("rom_id") or 0) in ids]
+        return history[:limit]
+
     def platforms(self) -> list[dict[str, Any]]:
         cached = self._cache_get("platforms", 90)
         if cached is not None:
@@ -163,18 +222,43 @@ class App:
         raw = self.client(server).platforms()
         cfg = self.config.get()
         emu_cfg = cfg.get("emudeck", {})
+        enabled = self.emudeck_enabled()
         emu = detect_emudeck(emu_cfg)
         overrides = emu_cfg.get("overrides", {})
         installs = self.state.installs()
         counts: dict[str, int] = {}
         for entry in installs:
             counts[str(entry.get("platform") or "")] = counts.get(str(entry.get("platform") or ""), 0) + 1
+        game_counts: dict[str, int] = {}
+        for game in self.library_roms():
+            key = str(game.get("platform_fs_slug") or game.get("platform_slug") or "")
+            game_counts[key] = game_counts.get(key, 0) + 1
         out = []
         for platform in raw:
-            mapping = platform_mapping(platform, emu, emu["launchers"], emu["cores"], overrides)
+            fs_slug = str(platform.get("fs_slug") or platform.get("slug") or "")
+            if enabled:
+                mapping = platform_mapping(platform, emu, emu["launchers"], emu["cores"], overrides)
+            else:
+                mapping = {
+                    "platform": fs_slug,
+                    "slug": platform.get("slug"),
+                    "name": platform.get("display_name") or platform.get("name") or fs_slug,
+                    "dir": "",
+                    "path": "",
+                    "exists": False,
+                    "launcher": "",
+                    "launcher_name": "",
+                    "launcher_path": "",
+                    "launcher_ready": False,
+                    "core": "",
+                    "source": "disabled",
+                }
+            mapping["enabled"] = enabled
             item = dict(platform)
             item["logo_url"] = f"/api/platform-logo/{platform.get('id')}" if platform.get("url_logo") else ""
             item["logo_normalized"] = PIL_AVAILABLE
+            item["game_count"] = game_counts.get(fs_slug, 0)
+            item["is_game_platform"] = fs_slug.lower() not in TOOL_PLATFORMS
             item["local"] = {
                 **mapping,
                 "installed_count": counts.get(mapping["platform"], 0),
@@ -216,6 +300,8 @@ class App:
             except (RomMError, HttpError):
                 pass
         emu = dict(emu)
+        emu["enabled"] = self.emudeck_enabled()
+        emu["installer"] = _find_emudeck_installer()
         emu["platforms"] = platforms
         emu["overrides"] = emu_cfg.get("overrides", {})
         return emu
@@ -267,6 +353,7 @@ class App:
             "installed": installed,
             "mapping": {
                 "platform": mapping.get("platform") or fs_slug,
+                "enabled": bool(mapping.get("enabled", True)),
                 "dir": mapping.get("dir") or "",
                 "path": mapping.get("path") or "",
                 "exists": bool(mapping.get("exists")),
@@ -305,24 +392,45 @@ class App:
         return out
 
     def roms(self, platform_key: str | None, search: str, limit: int, offset: int, sort: str) -> dict[str, Any]:
-        platform_ids = []
+        platform = None
         if platform_key and platform_key not in ("all", "*"):
-            platform_ids = [int(self.resolve_platform(platform_key).get("id"))]
+            platform = self.resolve_platform(platform_key)
+        items = list(self.library_roms())
+        if platform is not None:
+            platform_id = int(platform.get("id") or 0)
+            slugs = {str(platform.get("slug") or "").lower(), str(platform.get("fs_slug") or "").lower()}
+            items = [
+                rom for rom in items
+                if int(rom.get("platform_id") or 0) == platform_id
+                or str(rom.get("platform_slug") or "").lower() in slugs
+                or str(rom.get("platform_fs_slug") or "").lower() in slugs
+            ]
+        term = (search or "").strip().casefold()
+        if term:
+            items = [
+                rom for rom in items
+                if term in str(rom.get("name") or "").casefold()
+                or term in str(rom.get("fs_name") or "").casefold()
+                or term in str(rom.get("platform_display_name") or "").casefold()
+                or term in str(rom.get("platform_fs_slug") or "").casefold()
+            ]
         order_by, order_dir = _sort_params(sort)
-        data = self.client().roms(
-            platform_ids=platform_ids,
-            search=search or None,
-            limit=limit,
-            offset=offset,
-            order_by=order_by,
-            order_dir=order_dir,
-        )
-        items = [self.enrich_rom(rom) for rom in data.get("items") or []]
+        if order_by == "name":
+            items.sort(key=lambda rom: str(rom.get("name") or "").casefold(), reverse=order_dir == "desc")
+        elif order_by == "size":
+            items.sort(key=lambda rom: int(rom.get("fs_size_bytes") or 0), reverse=order_dir == "desc")
+        else:
+            items.sort(
+                key=lambda rom: str(rom.get("created_at") or rom.get("updated_at") or rom.get("id") or ""),
+                reverse=order_dir == "desc",
+            )
+        total = len(items)
+        page = items[offset : offset + limit]
         return {
-            "items": items,
-            "total": int(data.get("total") or len(items)),
-            "limit": int(data.get("limit") or limit),
-            "offset": int(data.get("offset") or offset),
+            "items": [self.enrich_rom(rom) for rom in page],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
         }
 
     def firmware(self, platform_id: int) -> list[dict[str, Any]]:
@@ -416,6 +524,7 @@ class App:
                 "configured": bool(self.active_server()),
                 "server": self.server_status(),
                 "emudeck": {
+                    "enabled": self.emudeck_enabled(),
                     "detected": bool(emu["detected"]),
                     "root": emu["root"],
                     "launchers": len([l for l in emu["launchers"] if l.get("ready")]),
@@ -495,6 +604,18 @@ class App:
         if route == ("GET", "/api/emudeck"):
             return 200, JSON, self.emudeck_snapshot()
 
+        if route == ("POST", "/api/emudeck/open-installer"):
+            self.require_emudeck()
+            installer = _find_emudeck_installer()
+            if not installer:
+                raise HttpError(404, "EmuDeck's installer was not found on this machine.")
+            if not os.access(installer, os.X_OK):
+                raise HttpError(409, f"EmuDeck's installer is not executable: {installer}")
+            log = os.path.join(data_dir(), "launcher.log")
+            pid = spawn([installer], log)
+            self.log(f"opened EmuDeck installer {installer} pid={pid}")
+            return 200, JSON, {"launched": True, "pid": pid, "path": installer}
+
         if route == ("POST", "/api/emudeck/mapping"):
             data = body or {}
             platform_key = str(data.get("platform") or "")
@@ -513,12 +634,12 @@ class App:
             return 200, JSON, self.emudeck_snapshot()
 
         if route == ("GET", "/api/installs"):
-            return 200, JSON, {"installs": self.state.installs(), "history": self.state.history(20)}
+            return 200, JSON, {"installs": self.game_installs(), "history": self.game_history(20)}
 
         if route == ("POST", "/api/installs/repair"):
             removed = self.state.repair()
             self._cache_clear()
-            return 200, JSON, {"removed": removed, "installs": self.state.installs()}
+            return 200, JSON, {"removed": removed, "installs": self.game_installs()}
 
         if route == ("GET", "/api/downloads"):
             return 200, JSON, {"downloads": self.downloads.list()}
@@ -531,6 +652,7 @@ class App:
             return 200, JSON, {"download": job}
 
         if route == ("POST", "/api/install"):
+            self.require_emudeck()
             data = body or {}
             rom_id = int(data.get("rom_id") or 0)
             if rom_id <= 0:
@@ -548,6 +670,7 @@ class App:
             return 200, JSON, {"download": job}
 
         if route == ("POST", "/api/bios"):
+            self.require_emudeck()
             data = body or {}
             platform_id = int(data.get("platform_id") or 0)
             if platform_id <= 0:
@@ -576,7 +699,7 @@ class App:
             return 200, JSON, self._play(rom_id, bool(data.get("dry_run")))
 
         if route == ("GET", "/api/history"):
-            return 200, JSON, {"history": self.state.history(30)}
+            return 200, JSON, {"history": self.game_history(30)}
 
         if route == ("GET", "/api/deeplink"):
             return 200, JSON, {"target": self.deeplinks.take()}
@@ -749,6 +872,7 @@ class App:
         }
 
     def _play(self, rom_id: int, dry_run: bool) -> dict[str, Any]:
+        self.require_emudeck()
         rom = self.rom_detail(rom_id)
         mapping = rom.get("mapping") or {}
         installed = rom.get("installed")
@@ -992,6 +1116,57 @@ def run(host: str = "0.0.0.0", port: int = 8790, config: ConfigStore | None = No
 
 
 # -- small utilities -----------------------------------------------------
+def _trim_rom(rom: dict[str, Any]) -> dict[str, Any]:
+    """Keep the fields the shelf needs and drop nested file trees.
+
+    The RomM list endpoint with files enabled can return every patch and
+    sidecar for a game; the shelf only needs the name of the top-level file,
+    so trimming here keeps a 300-game library small in memory.
+    """
+    out = dict(rom)
+    files = rom.get("files") or []
+    top = [f for f in files if f.get("is_top_level")]
+    out["files"] = [
+        {key: entry.get(key) for key in ("file_name", "file_size", "is_top_level")}
+        for entry in top
+    ]
+    return out
+
+
+def _is_game_rom(rom: dict[str, Any]) -> bool:
+    """Whether a RomM entry is a game rather than an emulator/tool artefact."""
+    platform = str(rom.get("platform_fs_slug") or rom.get("platform_slug") or "").lower()
+    if platform in TOOL_PLATFORMS:
+        return False
+    files = rom.get("files") or []
+    if not files:
+        return False
+    top = [f for f in files if f.get("is_top_level")]
+    if not top:
+        return False
+    for entry in top:
+        name = str(entry.get("file_name") or "")
+        extension = os.path.splitext(name)[1].lower()
+        if extension and extension not in TOOL_EXTENSIONS:
+            return True
+    return False
+
+
+def _find_emudeck_installer() -> str:
+    """Find the EmuDeck AppImage, the place emulators are installed from."""
+    home = os.path.expanduser("~")
+    patterns = [
+        os.path.join(home, "Applications", "EmuDeck*.AppImage"),
+        os.path.join(home, "Emulation", "tools", "EmuDeck*.AppImage"),
+        os.path.join(home, ".local", "bin", "EmuDeck*.AppImage"),
+    ]
+    for pattern in patterns:
+        for path in sorted(glob.glob(pattern), reverse=True):
+            if os.path.isfile(path) and os.access(path, os.X_OK):
+                return path
+    return ""
+
+
 def _q(query: dict[str, list[str]], key: str) -> str:
     values = query.get(key) or []
     return values[0].strip() if values else ""
