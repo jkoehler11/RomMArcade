@@ -23,6 +23,7 @@ const state = {
   autoPlay: null,
   trayHidden: 0,
   biosTimer: null,
+  biosBatch: null,
   timer: null,
   setup: null,
   sort: {},
@@ -703,9 +704,16 @@ async function downloadBios(platformId, button) {
   if (button) button.disabled = true;
   try {
     const result = await api.bios(platformId);
-    if (!result.downloads?.length) toast(`BIOS already present (${result.skipped} file${result.skipped === 1 ? "" : "s"})`, "good");
+    const jobs = result.downloads || [];
+    if (!jobs.length) toast(`BIOS already present (${result.skipped} file${result.skipped === 1 ? "" : "s"})`, "good");
     else {
-      toast(`Downloading ${result.downloads.length} BIOS file${result.downloads.length === 1 ? "" : "s"}`, "info");
+      const batch = state.biosBatch || { ids: new Set(), done: 0, failed: 0, total: 0 };
+      for (const job of jobs) {
+        batch.ids.add(job.id);
+        batch.total += 1;
+      }
+      state.biosBatch = batch;
+      toast(`Downloading ${jobs.length} BIOS file${jobs.length === 1 ? "" : "s"}`, "info");
       state.trayHidden = 0;
       await pollDownloads();
     }
@@ -921,6 +929,7 @@ async function pollDownloads() {
     }
   }
   for (const job of state.downloads) {
+    if (job.kind === "bios" && job.status === "done") noteBiosFinished(job);
     if (job.status === "done" && !state.seenDone.has(job.id)) {
       state.seenDone.add(job.id);
       if (job.kind === "rom") {
@@ -934,21 +943,28 @@ async function pollDownloads() {
         // A game page is already correct after the in-place swap.  Other
         // views still need a refresh so the new install appears in their rails.
         if (current.name !== "settings" && current.name !== "game") route();
-      } else if (job.kind === "bios") {
-        toast(`BIOS ${job.name} saved`, "good");
-        scheduleBiosRefresh();
       }
     }
     if (job.status === "error" && !state.seenErrors.has(job.id)) {
       state.seenErrors.add(job.id);
       toast(`${job.name}: ${job.error || "download failed"}`, "bad");
       state.pendingPlay.delete(Number(job.rom_id));
+      if (job.kind === "bios" && state.biosBatch?.ids.has(job.id)) {
+        state.biosBatch.ids.delete(job.id);
+        state.biosBatch.failed += 1;
+        if (!state.biosBatch.ids.size) finishBiosBatch();
+      }
       if (parseRoute().name === "game" && Number(parseRoute().args[0]) === Number(job.rom_id)) route();
     }
     if (job.status === "canceled" && !state.seenErrors.has(job.id)) {
       state.seenErrors.add(job.id);
       toast(`${job.name}: install canceled`, "info");
       state.pendingPlay.delete(Number(job.rom_id));
+      if (job.kind === "bios" && state.biosBatch?.ids.has(job.id)) {
+        state.biosBatch.ids.delete(job.id);
+        state.biosBatch.failed += 1;
+        if (!state.biosBatch.ids.size) finishBiosBatch();
+      }
       if (parseRoute().name === "game" && Number(parseRoute().args[0]) === Number(job.rom_id)) route();
     }
   }
@@ -962,6 +978,30 @@ function scheduleBiosRefresh() {
     const current = parseRoute();
     if (current.name === "game" || current.name === "platform") route();
   }, 600);
+}
+
+function noteBiosFinished(job) {
+  const batch = state.biosBatch;
+  if (!batch || !batch.ids.has(job.id)) return;
+  batch.ids.delete(job.id);
+  batch.done += 1;
+  if (!batch.ids.size) finishBiosBatch();
+}
+
+function finishBiosBatch() {
+  const batch = state.biosBatch;
+  if (!batch) return;
+  state.biosBatch = null;
+  const saved = batch.done;
+  const failed = batch.failed;
+  if (saved && !failed) {
+    toast(`${saved} BIOS file${saved === 1 ? "" : "s"} saved`, "good");
+  } else if (saved) {
+    toast(`${saved} BIOS file${saved === 1 ? "" : "s"} saved, ${failed} failed`, "info");
+  } else if (failed) {
+    toast(`${failed} BIOS file${failed === 1 ? "" : "s"} failed`, "bad");
+  }
+  scheduleBiosRefresh();
 }
 
 function renderTray() {
