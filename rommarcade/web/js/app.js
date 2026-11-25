@@ -763,7 +763,7 @@ function applyInstallToView(romId, job) {
     }
     const badges = card.querySelector(".badges");
     if (badges && !badges.querySelector(".badge.cloud")) {
-      badges.append(h("span", { class: "badge cloud" }, installLabel(job)));
+      badges.append(h("span", { class: "badge cloud", "data-install-badge": romId }, installLabel(job)));
     }
   }
   const current = parseRoute();
@@ -792,6 +792,10 @@ function syncInstallState() {
   document.querySelectorAll("[data-install-rom]").forEach((el) => {
     const job = activeInstallJob(el.dataset.installRom);
     if (job) el.title = installLabel(job);
+  });
+  document.querySelectorAll("[data-install-badge]").forEach((el) => {
+    const job = activeInstallJob(el.dataset.installBadge);
+    if (job) el.textContent = installLabel(job);
   });
   const current = parseRoute();
   if (current.name !== "game") return;

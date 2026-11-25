@@ -198,7 +198,7 @@ export function gameCard(rom, { showPlay = true } = {}) {
   const cover = coverImage(rom, { size: "small" });
   const badges = h("div", { class: "badges" });
   if (installed) badges.append(h("span", { class: "badge local" }, "Local"));
-  if (installing) badges.append(h("span", { class: "badge cloud" }, installLabel(job)));
+  if (installing) badges.append(h("span", { class: "badge cloud", "data-install-badge": rom.id }, installLabel(job)));
   if (rom.has_multiple_files) badges.append(h("span", { class: "badge muted" }, "Multi"));
   if (!installed && !installing && rom.mapping && !rom.mapping.exists) badges.append(h("span", { class: "badge warn" }, "No folder"));
   card.append(cover, badges);
