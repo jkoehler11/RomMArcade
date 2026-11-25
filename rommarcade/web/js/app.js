@@ -2,7 +2,7 @@
 import { api } from "./api.js";
 import {
   h, icon, toast, openModal, closeModal, emptyState, coverImage, gameCard,
-  platformCard, skeletonGrid, fmtBytes, fmtSpeed, timeAgo, shortDate, debounce, initials,
+  platformCard, skeletonGrid, fmtBytes, fmtSpeed, timeAgo, shortDate, debounce, initials, installLabel,
 } from "./ui.js";
 
 const state = {
@@ -16,6 +16,7 @@ const state = {
   renderToken: 0,
   seenDone: new Set(),
   seenErrors: new Set(),
+  installRenderJobs: new Set(),
   pendingPlay: new Map(),
   autoPlay: null,
   trayHidden: 0,
@@ -218,9 +219,9 @@ async function renderLibrary(token) {
   frag.append(heroBlock(featured, installs.length));
   frag.append(emudeckStrip(withGames));
   frag.append(platformRail(withGames, ""));
-  if (roms.length) frag.append(rail("Recently added", `${recent.total} in library`, roms.map((r) => gameCard(r, { showPlay: playable }))));
+  if (roms.length) frag.append(rail("Recently added", `${recent.total} in library`, roms.map((r) => gameCard(withInstallJob(r), { showPlay: playable }))));
   if (installs.length) {
-    frag.append(rail("Ready to play", `${installs.length} local`, installs.slice(0, 12).map((entry) => gameCard(pseudoRomFromInstall(entry), { showPlay: playable }))));
+    frag.append(rail("Ready to play", `${installs.length} local`, installs.slice(0, 12).map((entry) => gameCard(withInstallJob(pseudoRomFromInstall(entry)), { showPlay: playable }))));
   }
   if (!roms.length && !installs.length) {
     frag.append(emptyState({
@@ -248,7 +249,8 @@ function heroBlock(rom, localCount) {
   }
   const installed = Boolean(rom.installed);
   const playable = state.status?.emudeck?.enabled !== false;
-  return h("section", { class: "hero" },
+  const installJob = activeInstallJob(rom.id);
+  return h("section", { class: "hero", dataset: { rom: rom.id } },
     h("div", { class: "hero-art" },
       rom.cover ? h("img", { src: `/api/cover/${rom.id}?size=large`, alt: "", loading: "eager" }) : null,
     ),
@@ -262,9 +264,11 @@ function heroBlock(rom, localCount) {
       ),
       h("div", { class: "hero-actions" },
         playable
-          ? (installed
-            ? h("button", { class: "btn primary", onClick: () => playRom(rom.id) }, icon("play"), "Play now")
-            : h("button", { class: "btn primary", onClick: () => installRom(rom.id, { play: true }) }, icon("download"), "Install & play"))
+          ? (installJob
+            ? installProgressButton(installJob)
+            : (installed
+              ? h("button", { class: "btn primary", onClick: () => playRom(rom.id) }, icon("play"), "Play now")
+              : h("button", { class: "btn primary", onClick: () => installRom(rom.id, { play: true }) }, icon("download"), "Install & play")))
           : h("a", { class: "btn primary", href: "#/emudeck" }, icon("settings"), "Turn on EmuDeck"),
         h("a", { class: "btn ghost", href: `#/game/${rom.id}` }, "Details", icon("arrow")),
       ),
@@ -394,7 +398,7 @@ async function renderPlatform(slug, token) {
     }));
   }
   body.push(data.items?.length
-    ? h("div", { class: "grid" }, data.items.map((rom) => gameCard(rom, { showPlay: enabled })))
+    ? h("div", { class: "grid" }, data.items.map((rom) => gameCard(withInstallJob(rom), { showPlay: enabled })))
     : emptyState({ glyph: "cart", title: "No games here yet", body: "This platform exists in RomM but has no visible games on this server." }));
   if (data.total > (data.items?.length || 0)) {
     body.push(h("div", { class: "row", style: { justifyContent: "center", marginTop: "26px" } },
@@ -410,7 +414,7 @@ async function loadMorePlatform(platform, data, button) {
     const more = await api.roms({ platform: platform.fs_slug || platform.slug, limit: 150, offset: data.items.length, sort: state.sort[platform.fs_slug] || "name" });
     const grid = viewEl.querySelector(".grid");
     const playable = state.status?.emudeck?.enabled !== false;
-    (more.items || []).forEach((rom) => grid.append(gameCard(rom, { showPlay: playable })));
+    (more.items || []).forEach((rom) => grid.append(gameCard(withInstallJob(rom), { showPlay: playable })));
     data.items.push(...(more.items || []));
     if (data.items.length >= data.total) button.parentElement.remove();
   } catch (error) { toast(error.message, "bad"); }
@@ -448,8 +452,11 @@ async function renderGame(id, token) {
 
   const actions = [];
   const emuOn = mapping.enabled !== false;
+  const installJob = activeInstallJob(rom.id);
   if (!emuOn) {
     actions.push(h("a", { class: "btn", href: "#/emudeck" }, icon("settings"), "Turn on EmuDeck integration"));
+  } else if (installJob) {
+    actions.push(installProgressButton(installJob));
   } else if (installed) {
     actions.push(h("button", { class: "btn primary", onClick: () => playRom(rom.id) }, icon("play"), "Play"));
     actions.push(h("span", { class: "chip ok" }, icon("check"), "Installed"));
@@ -548,7 +555,7 @@ async function renderInstalled(token) {
   const body = [head];
   if (installs.length) {
     const playable = state.status?.emudeck?.enabled !== false;
-    body.push(h("div", { class: "grid" }, installs.map((entry) => gameCard(pseudoRomFromInstall(entry), { showPlay: playable }))));
+    body.push(h("div", { class: "grid" }, installs.map((entry) => gameCard(withInstallJob(pseudoRomFromInstall(entry)), { showPlay: playable }))));
   } else {
     body.push(emptyState({
       glyph: "download",
@@ -592,7 +599,7 @@ async function renderSearch(query, token) {
     ),
   );
   viewEl.replaceChildren(head, data.items?.length
-    ? h("div", { class: "grid" }, data.items.map((rom) => gameCard(rom, { showPlay: state.status?.emudeck?.enabled !== false })))
+    ? h("div", { class: "grid" }, data.items.map((rom) => gameCard(withInstallJob(rom), { showPlay: state.status?.emudeck?.enabled !== false })))
     : emptyState({ glyph: "search", title: "Nothing matched", body: "Try a shorter title, or search for the platform name." }));
 }
 
@@ -619,7 +626,10 @@ async function installRom(romId, { play = false } = {}) {
     state.pendingPlay.set(Number(romId), play);
     toast(`Installing ${result.download?.name || "game"}`, "info");
     state.trayHidden = 0;
-    await route();
+    if (result.download?.id) {
+      state.downloads = [result.download, ...state.downloads.filter((job) => job.id !== result.download.id)];
+      applyInstallToView(Number(romId), result.download);
+    }
     await pollDownloads();
   } catch (error) {
     toast(error.message, "bad");
@@ -713,6 +723,86 @@ function onKey(event) {
 }
 
 // ------------------------------------------------------------ downloads ---
+function activeInstallJob(romId) {
+  return state.downloads.find((job) => Number(job.rom_id) === Number(romId)
+    && ["queued", "downloading", "extracting"].includes(job.status));
+}
+
+function withInstallJob(rom) {
+  const job = activeInstallJob(rom.id);
+  return job ? { ...rom, installing: true, install_job: job } : rom;
+}
+
+function installProgressButton(job) {
+  const label = installLabel(job);
+  return h("button", {
+    class: "btn primary installing",
+    disabled: true,
+    "data-install-progress": job.rom_id,
+    title: label,
+  },
+    h("span", { class: "spinner", "aria-hidden": "true" }),
+    h("span", { "data-install-label": "", role: "status", "aria-live": "polite" }, label),
+  );
+}
+
+function applyInstallToView(romId, job) {
+  if (!job) return;
+  const card = document.querySelector(`.game-card[data-rom="${romId}"]`);
+  if (card) {
+    card.classList.add("installing");
+    const play = card.querySelector(".card-play");
+    if (play && !play.classList.contains("installing")) {
+      play.replaceWith(h("button", {
+        class: "card-play installing",
+        disabled: true,
+        "data-install-rom": romId,
+        title: installLabel(job),
+        "aria-label": `${installLabel(job)}: ${card.getAttribute("aria-label") || ""}`,
+      }, h("span", { class: "spinner", "aria-hidden": "true" })));
+    }
+    const badges = card.querySelector(".badges");
+    if (badges && !badges.querySelector(".badge.cloud")) {
+      badges.append(h("span", { class: "badge cloud" }, installLabel(job)));
+    }
+  }
+  const current = parseRoute();
+  if (current.name === "game" && Number(current.args[0]) === Number(romId)) {
+    const actions = document.querySelector(".game-actions");
+    if (actions) {
+      const back = [...actions.querySelectorAll("a")].find((link) => (link.getAttribute("href") || "").startsWith("#/platform/"));
+      actions.replaceChildren(installProgressButton(job));
+      if (back) actions.append(back);
+    }
+  }
+  const heroActions = document.querySelector(`.hero[data-rom="${romId}"] .hero-actions`);
+  const primary = heroActions?.querySelector(".btn.primary");
+  if (primary) primary.replaceWith(installProgressButton(job));
+}
+
+function syncInstallState() {
+  document.querySelectorAll("[data-install-progress]").forEach((el) => {
+    const job = activeInstallJob(el.dataset.installProgress);
+    if (!job) return;
+    const label = installLabel(job);
+    el.title = label;
+    const text = el.querySelector("[data-install-label]");
+    if (text) text.textContent = label;
+  });
+  document.querySelectorAll("[data-install-rom]").forEach((el) => {
+    const job = activeInstallJob(el.dataset.installRom);
+    if (job) el.title = installLabel(job);
+  });
+  const current = parseRoute();
+  if (current.name !== "game") return;
+  const job = activeInstallJob(current.args[0]);
+  const hasProgress = document.querySelector("[data-install-progress]");
+  if (job && !hasProgress && !state.installRenderJobs.has(job.id)) {
+    state.installRenderJobs.add(job.id);
+    route();
+  }
+}
+
 async function pollDownloads() {
   try {
     const data = await api.downloads();
@@ -737,8 +827,16 @@ async function pollDownloads() {
       state.seenErrors.add(job.id);
       toast(`${job.name}: ${job.error || "download failed"}`, "bad");
       state.pendingPlay.delete(Number(job.rom_id));
+      if (parseRoute().name === "game" && Number(parseRoute().args[0]) === Number(job.rom_id)) route();
+    }
+    if (job.status === "canceled" && !state.seenErrors.has(job.id)) {
+      state.seenErrors.add(job.id);
+      toast(`${job.name}: install canceled`, "info");
+      state.pendingPlay.delete(Number(job.rom_id));
+      if (parseRoute().name === "game" && Number(parseRoute().args[0]) === Number(job.rom_id)) route();
     }
   }
+  syncInstallState();
   renderTray();
 }
 
@@ -1107,6 +1205,7 @@ async function renderEmudeck(token) {
   let platforms = [];
   try { platforms = await getPlatforms(); } catch { platforms = []; }
   const enabled = emu?.enabled !== false;
+  const canOpen = Boolean(emu?.detected && emu?.installer);
   const mapped = platforms.filter((p) => p.is_game_platform !== false && Number(p.game_count ?? p.rom_count) > 0 && p.local?.exists && p.local?.launcher).length;
   const head = h("div", { class: "page-head" },
     h("div", { class: "grow" },
@@ -1115,6 +1214,12 @@ async function renderEmudeck(token) {
       h("p", { class: "page-sub" }, "The library is games only. EmuDeck owns the emulators, the ROM folders and the launchers; RomMArcade hands it the right file."),
     ),
     h("div", { class: "page-actions" },
+      h("button", {
+        class: "btn small",
+        onClick: openEmudeckInstaller,
+        disabled: !canOpen,
+        title: canOpen ? "Open the EmuDeck installer" : "EmuDeck was not found",
+      }, icon("external"), "Open EmuDeck"),
       emudeckSwitch(enabled),
       h("span", { class: `chip ${enabled ? "ok" : ""}` }, enabled ? "On" : "Off"),
       enabled ? h("span", { class: `chip ${emu?.detected ? "ok" : "warn"}` }, emu?.detected ? "Detected" : "Not found") : null,
@@ -1135,7 +1240,6 @@ async function renderEmudeck(token) {
       icon("alert"),
       h("div", { class: "txt" }, h("b", null, "EmuDeck was not found"),
         h("div", null, "Install EmuDeck or point RomMArcade at an existing Emulation folder.")),
-      h("button", { class: "btn small", onClick: openEmudeckInstaller }, icon("external"), "Open EmuDeck"),
     ));
   } else if (dead.length) {
     const deadNames = [...new Set(dead.map((l) => l.name))];
@@ -1143,14 +1247,12 @@ async function renderEmudeck(token) {
       icon("alert"),
       h("div", { class: "txt" }, h("b", null, `${deadNames.length} emulator${deadNames.length === 1 ? "" : "s"} without an app`),
         h("div", null, `EmuDeck left ${deadNames.join(", ")} behind with no app to run. Install the missing emulators in EmuDeck.`)),
-      h("button", { class: "btn small", onClick: openEmudeckInstaller }, icon("external"), "Open EmuDeck"),
     ));
   } else if (missing.length) {
     warnings.push(h("div", { class: "bios-banner" },
       icon("alert"),
       h("div", { class: "txt" }, h("b", null, `${missing.length} game system${missing.length === 1 ? "" : "s"} without an emulator`),
         h("div", null, "Games on those systems can be browsed but not installed or played until EmuDeck has an emulator for them.")),
-      h("button", { class: "btn small", onClick: openEmudeckInstaller }, icon("external"), "Open EmuDeck"),
     ));
   }
 
@@ -1161,7 +1263,6 @@ async function renderEmudeck(token) {
         h("h3", null, "How RomMArcade uses EmuDeck"),
         h("p", { class: "sub" }, "No second emulator setup: the ROMs, launchers and BIOS are the ones EmuDeck already manages."),
       ),
-      h("button", { class: "btn small", onClick: openEmudeckInstaller }, icon("external"), "Open EmuDeck"),
     ),
     h("div", { class: "emu-how" },
       howStep("Install", "Games are written to EmuDeck's ROM folders; multi-file games become a folder.", emu?.roms_root ? `${emu.roms_root}/<system>` : "~/Emulation/roms/<system>"),
@@ -1192,13 +1293,8 @@ function emudeckDisabledCard() {
     h("div", { class: "card-head" },
       h("div", { class: "grow" },
         h("h3", null, "EmuDeck integration is off"),
-        h("p", { class: "sub" }, "RomMArcade is a pure RomM library browser right now: no installs, no launches, no BIOS downloads. The library still only shows games."),
+        h("p", { class: "sub" }, "RomMArcade is a pure RomM library browser right now: no installs, no launches, no BIOS downloads. The library still only shows games. Turn it back on with the EmuDeck toggle on the EmuDeck page."),
       ),
-    ),
-    h("div", { class: "row", style: { marginTop: "4px" } },
-      emudeckSwitch(false),
-      h("div", { class: "spacer" }),
-      h("button", { class: "btn primary", onClick: () => setEmudeckEnabled(true) }, icon("check"), "Turn on EmuDeck integration"),
     ),
   );
 }
@@ -1494,8 +1590,6 @@ async function settingsEmulators(body, token) {
     h("div", { class: "card-head" },
       h("div", { class: "grow" }, h("h3", null, "EmuDeck"), h("p", { class: "sub" }, "Detected installation and the launchers RomMArcade can hand a ROM to.")),
       h("div", { class: "row" },
-        emudeckSwitch(enabled),
-        h("button", { class: "btn small", onClick: openEmudeckInstaller }, icon("external"), "Open EmuDeck"),
         h("button", { class: "btn small", onClick: () => refreshEmudeck() }, icon("refresh"), "Rescan"),
       ),
     ),

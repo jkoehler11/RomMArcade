@@ -53,6 +53,14 @@ export function fmtSpeed(bytesPerSecond) {
   return `${fmtBytes(bytesPerSecond)}/s`;
 }
 
+export function installLabel(job) {
+  if (!job) return "Installing";
+  if (job.status === "extracting") return "Extracting";
+  if (job.status === "queued") return "Queued";
+  const pct = Math.max(0, Math.min(100, Math.round(Number(job.progress || 0) * 100)));
+  return pct > 0 ? `Installing ${pct}%` : "Installing";
+}
+
 export function timeAgo(iso) {
   if (!iso) return "";
   const then = new Date(iso).getTime();
@@ -168,8 +176,10 @@ function fallbackCover(rom) {
 
 export function gameCard(rom, { showPlay = true } = {}) {
   const installed = Boolean(rom.installed);
+  const job = rom.install_job || null;
+  const installing = Boolean(job);
   const card = h("article", {
-    class: `game-card ${rom.installing ? "installing" : ""}`,
+    class: `game-card ${installing || rom.installing ? "installing" : ""}`,
     dataset: { rom: rom.id },
     tabindex: "0",
     role: "link",
@@ -188,10 +198,19 @@ export function gameCard(rom, { showPlay = true } = {}) {
   const cover = coverImage(rom, { size: "small" });
   const badges = h("div", { class: "badges" });
   if (installed) badges.append(h("span", { class: "badge local" }, "Local"));
+  if (installing) badges.append(h("span", { class: "badge cloud" }, installLabel(job)));
   if (rom.has_multiple_files) badges.append(h("span", { class: "badge muted" }, "Multi"));
-  if (!installed && rom.mapping && !rom.mapping.exists) badges.append(h("span", { class: "badge warn" }, "No folder"));
+  if (!installed && !installing && rom.mapping && !rom.mapping.exists) badges.append(h("span", { class: "badge warn" }, "No folder"));
   card.append(cover, badges);
-  if (showPlay) {
+  if (showPlay && installing) {
+    card.append(h("button", {
+      class: "card-play installing",
+      disabled: true,
+      "data-install-rom": rom.id,
+      title: installLabel(job),
+      "aria-label": `${installLabel(job)}: ${rom.name}`,
+    }, h("span", { class: "spinner", "aria-hidden": "true" })));
+  } else if (showPlay) {
     card.append(h("button", {
       class: "card-play",
       "data-stop": "",

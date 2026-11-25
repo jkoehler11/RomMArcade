@@ -311,6 +311,9 @@ class App:
         if use_cache:
             cached = self._cache_get(key, 120)
             if cached is not None:
+                # Install state changes without touching the RomM metadata, so
+                # refresh it even when the rest of the detail came from cache.
+                cached["installed"] = self.state.install_for(int(rom_id))
                 return cached
         rom = self.client().rom(int(rom_id))
         if not rom.get("files"):
