@@ -671,7 +671,6 @@ class App:
                     "Set one in Settings, Emulators.",
                 )
             job = self.downloads.enqueue_rom(rom, mapping, self.client())
-            self._cache_clear()
             return 200, JSON, {"download": job}
 
         if route == ("POST", "/api/bios"):

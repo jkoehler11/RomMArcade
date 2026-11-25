@@ -16,6 +16,8 @@ const state = {
   renderToken: 0,
   seenDone: new Set(),
   seenErrors: new Set(),
+  downloadsPrimed: false,
+  sessionStart: Date.now() / 1000,
   installRenderJobs: new Set(),
   pendingPlay: new Map(),
   autoPlay: null,
@@ -746,6 +748,50 @@ function installProgressButton(job) {
   );
 }
 
+function playButtonFor(romId, label = "Play") {
+  return h("button", { class: "btn primary", onClick: () => playRom(romId) }, icon("play"), label);
+}
+
+function cardPlayButtonFor(romId, name = "") {
+  return h("button", {
+    class: "card-play",
+    "data-stop": "",
+    title: "Play",
+    "aria-label": `Play ${name}`,
+    onClick: (event) => {
+      event.stopPropagation();
+      playRom(romId);
+    },
+  }, icon("play"));
+}
+
+function markInstalledInView(romId) {
+  const current = parseRoute();
+  if (current.name === "game" && Number(current.args[0]) === Number(romId)) {
+    const actions = document.querySelector(".game-actions");
+    if (actions) {
+      const back = [...actions.querySelectorAll("a")].find((link) => (link.getAttribute("href") || "").startsWith("#/platform/"));
+      actions.replaceChildren(
+        playButtonFor(romId),
+        h("span", { class: "chip ok" }, icon("check"), "Installed"),
+      );
+      if (back) actions.append(back);
+    }
+  }
+  const heroActions = document.querySelector(`.hero[data-rom="${romId}"] .hero-actions`);
+  const heroPrimary = heroActions?.querySelector(".btn.primary");
+  if (heroPrimary) heroPrimary.replaceWith(playButtonFor(romId, "Play now"));
+  document.querySelectorAll(`.game-card[data-rom="${romId}"]`).forEach((card) => {
+    card.classList.remove("installing");
+    const button = card.querySelector(".card-play.installing");
+    if (button) button.replaceWith(cardPlayButtonFor(romId, card.getAttribute("aria-label") || ""));
+    card.querySelector("[data-install-badge]")?.remove();
+    if (!card.querySelector(".badge.local")) {
+      card.querySelector(".badges")?.prepend(h("span", { class: "badge local" }, "Local"));
+    }
+  });
+}
+
 function applyInstallToView(romId, job) {
   if (!job) return;
   const card = document.querySelector(`.game-card[data-rom="${romId}"]`);
@@ -801,6 +847,13 @@ function syncInstallState() {
   if (current.name !== "game") return;
   const job = activeInstallJob(current.args[0]);
   const hasProgress = document.querySelector("[data-install-progress]");
+  if (!job && hasProgress) {
+    const doneJob = state.downloads.find((entry) => Number(entry.rom_id) === Number(current.args[0])
+      && entry.status === "done");
+    if (doneJob) markInstalledInView(current.args[0]);
+    else route();
+    return;
+  }
   if (job && !hasProgress && !state.installRenderJobs.has(job.id)) {
     state.installRenderJobs.add(job.id);
     route();
@@ -812,17 +865,33 @@ async function pollDownloads() {
     const data = await api.downloads();
     state.downloads = data.downloads || [];
   } catch { return; }
+  if (!state.downloadsPrimed) {
+    // The server keeps completed jobs around for the tray.  On the first poll
+    // mark old terminal jobs as already seen so they do not replay toasts or
+    // force a route while a fresh install is on screen.
+    state.downloadsPrimed = true;
+    for (const job of state.downloads) {
+      if (["done", "error", "canceled"].includes(job.status)
+        && Number(job.started_at || 0) < state.sessionStart) {
+        state.seenDone.add(job.id);
+        state.seenErrors.add(job.id);
+      }
+    }
+  }
   for (const job of state.downloads) {
     if (job.status === "done" && !state.seenDone.has(job.id)) {
       state.seenDone.add(job.id);
       if (job.kind === "rom") {
         toast(`${job.name} installed`, "good");
         state.installs = null;
-        state.platforms = null;
+        const current = parseRoute();
         const wantsPlay = state.pendingPlay.get(Number(job.rom_id));
         state.pendingPlay.delete(Number(job.rom_id));
+        markInstalledInView(job.rom_id);
         if (wantsPlay) playRom(job.rom_id);
-        else if (parseRoute().name !== "settings") route();
+        // A game page is already correct after the in-place swap.  Other
+        // views still need a refresh so the new install appears in their rails.
+        if (current.name !== "settings" && current.name !== "game") route();
       } else if (job.kind === "bios") {
         toast(`BIOS ${job.name} saved`, "good");
       }
