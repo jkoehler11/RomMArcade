@@ -146,13 +146,13 @@ export function emptyState({ glyph = "cart", title, body, action = null }) {
   );
 }
 
-export function coverImage(rom, { size = "small", className = "" } = {}) {
+export function coverImage(rom, { size = "small", className = "", loading = "lazy" } = {}) {
   const wrap = h("div", { class: `cover ${className}` });
   if (rom.cover) {
     const img = h("img", {
       src: `/api/cover/${rom.id}?size=${size}`,
       alt: "",
-      loading: "lazy",
+      loading,
       decoding: "async",
     });
     img.addEventListener("error", () => {
@@ -174,7 +174,7 @@ function fallbackCover(rom) {
   );
 }
 
-export function gameCard(rom, { showPlay = true } = {}) {
+export function gameCard(rom, { showPlay = true, eager = false } = {}) {
   const installed = Boolean(rom.installed);
   const job = rom.install_job || null;
   const installing = Boolean(job);
@@ -195,7 +195,7 @@ export function gameCard(rom, { showPlay = true } = {}) {
       }
     },
   });
-  const cover = coverImage(rom, { size: "small" });
+  const cover = coverImage(rom, { size: "small", loading: eager ? "eager" : "lazy" });
   const badges = h("div", { class: "badges" });
   if (installed) badges.append(h("span", { class: "badge local" }, "Local"));
   if (installing) badges.append(h("span", { class: "badge cloud", "data-install-badge": rom.id }, installLabel(job)));

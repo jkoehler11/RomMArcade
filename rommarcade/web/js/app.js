@@ -221,7 +221,7 @@ async function renderLibrary(token) {
   frag.append(platformRail(withGames, ""));
   if (roms.length) frag.append(rail("Recently added", `${recent.total} in library`, roms.map((r) => gameCard(withInstallJob(r), { showPlay: playable }))));
   if (installs.length) {
-    frag.append(rail("Ready to play", `${installs.length} local`, installs.slice(0, 12).map((entry) => gameCard(withInstallJob(pseudoRomFromInstall(entry)), { showPlay: playable }))));
+    frag.append(rail("Ready to play", `${installs.length} local`, installs.slice(0, 12).map((entry) => gameCard(withInstallJob(pseudoRomFromInstall(entry)), { showPlay: playable, eager: true }))));
   }
   if (!roms.length && !installs.length) {
     frag.append(emptyState({
@@ -555,7 +555,7 @@ async function renderInstalled(token) {
   const body = [head];
   if (installs.length) {
     const playable = state.status?.emudeck?.enabled !== false;
-    body.push(h("div", { class: "grid" }, installs.map((entry) => gameCard(withInstallJob(pseudoRomFromInstall(entry)), { showPlay: playable }))));
+    body.push(h("div", { class: "grid" }, installs.map((entry) => gameCard(withInstallJob(pseudoRomFromInstall(entry)), { showPlay: playable, eager: true }))));
   } else {
     body.push(emptyState({
       glyph: "download",
