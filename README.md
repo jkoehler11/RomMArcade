@@ -38,7 +38,8 @@ RomM server  ──HTTP──▶  RomMArcade  ──files──▶  ~/Emulation/
 - **A URL scheme.** `rommarcade://open?rom=180&play=1` opens, installs and starts a game from a
   browser, a desktop shortcut, or RomM's own **Play** menu through the bundled plugin manifest.
 - **Live install progress.** A download tray with per-job progress, speed, cancel, and automatic
-  play-after-install when the link asked for it.
+  play-after-install when the link asked for it. The install button itself becomes a disabled
+  `Installing 42%` button while the job runs, and the separate install-only action disappears.
 
 ## Install
 
@@ -69,6 +70,15 @@ rommarcade open 'rommarcade://open?rom=180'
 
 Config lives in `~/.config/rommarcade/config.json` (mode 600). Data — installs, covers, logs — lives
 in `~/.local/share/rommarcade`.
+
+### One service, one machine
+
+Settings are per service installation, not per browser. RomMArcade discovers EmuDeck, writes ROMs
+and starts launchers on the machine running the service. If you open the same URL from another
+computer, that browser remote-controls the host: installs land in the host's EmuDeck and games play
+on the host. To use a second PC with its own EmuDeck, run a second RomMArcade instance there with
+its own config. The service listens on `0.0.0.0` and has no login, so keep it on a trusted LAN or
+firewall the port.
 
 ## URL support
 
