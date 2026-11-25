@@ -192,7 +192,7 @@ function pseudoRomFromInstall(entry) {
     platform_name: platformFor(entry.platform)?.display_name || entry.platform || "",
     platform_fs_slug: entry.platform,
     size: entry.size,
-    cover: entry.cover,
+    cover: entry.cover || true,
     installed: entry,
   };
 }

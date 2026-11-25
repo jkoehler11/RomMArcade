@@ -51,7 +51,7 @@ class StateStore:
                 "path": path,
                 "size": int(size or 0),
                 "has_multiple_files": bool(rom.get("has_multiple_files")),
-                "cover": rom.get("path_cover_large") or rom.get("path_cover_small") or "",
+                "cover": rom.get("path_cover_large") or rom.get("path_cover_small") or rom.get("cover") or "",
                 "installed_at": _now(),
             }
             self._data["installs"][str(entry["rom_id"])] = entry
