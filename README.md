@@ -37,6 +37,8 @@ RomM server  ──HTTP──▶  RomMArcade  ──files──▶  ~/Emulation/
   `cemu.sh`, `flycast.sh`, …), passing a RetroArch core when the system needs one.
 - **A URL scheme.** `rommarcade://open?rom=180&play=1` opens, installs and starts a game from a
   browser, a desktop shortcut, or RomM's own **Play** menu through the bundled plugin manifest.
+- **Uninstall with a choice.** Remove an installed game from EmuDeck's ROM folder, with a checkbox
+  to also remove that game's saves and save states from EmuDeck's `saves/` and `states/` folders.
 - **Live install progress.** A download tray with per-job progress, speed, cancel, and automatic
   play-after-install when the link asked for it. The install button itself becomes a disabled
   `Installing 42%` button while the job runs, and the separate install-only action disappears.
@@ -185,7 +187,7 @@ hands off files it did not create.
 ## Development
 
 ```bash
-python3 -m unittest tests.test_integration -v   # 20 tests, no network
+python3 -m unittest tests.test_integration -v   # 22 tests, no network
 ROMARCADE_HOME=/tmp/rommarcade-dev python3 -m rommarcade serve --port 8791
 ```
 

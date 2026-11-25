@@ -61,6 +61,7 @@ export const api = {
   openInstaller: () => request("/api/emudeck/open-installer", { method: "POST", body: {} }),
   mapPlatform: (body) => request("/api/emudeck/mapping", { method: "POST", body }),
   installs: () => request("/api/installs"),
+  uninstall: (romId, removeSaves = true) => request(`/api/installs/${Number(romId)}/uninstall`, { method: "POST", body: { remove_saves: Boolean(removeSaves) } }),
   repairInstalls: () => request("/api/installs/repair", { method: "POST" }),
   downloads: () => request("/api/downloads"),
   cancelDownload: (id) => request(`/api/downloads/${encodeURIComponent(id)}/cancel`, { method: "POST" }),

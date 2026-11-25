@@ -555,6 +555,58 @@ def bios_target(firmware: dict[str, Any], bios_root: str) -> str:
     return os.path.join(bios_root, *parts, file_name)
 
 
+def save_roots(emulation_root: str, platform_dir: str) -> list[str]:
+    """EmuDeck's per-game save and save-state folders for one platform."""
+    directory = sanitize_name(platform_dir or "")
+    if not emulation_root or not directory:
+        return []
+    return [
+        os.path.join(emulation_root, "saves", directory),
+        os.path.join(emulation_root, "states", directory),
+    ]
+
+
+def _save_matches(name: str, stem: str) -> bool:
+    lowered = name.lower()
+    wanted = stem.lower()
+    return (
+        lowered == wanted
+        or lowered.startswith(wanted + ".")
+        or lowered.startswith(wanted + " ")
+    )
+
+
+def remove_game_saves(emulation_root: str, platform_dir: str, rom_stem: str) -> list[str]:
+    """Remove save files and states whose names belong to one installed ROM.
+
+    Only immediate children of EmuDeck's saves/states folders are touched, and
+    only when the name is the ROM stem or the stem plus a suffix.  Memory-card
+    images shared by a whole system are deliberately left alone.
+    """
+    removed: list[str] = []
+    stem = sanitize_name(rom_stem or "")
+    if not stem:
+        return removed
+    for root in save_roots(emulation_root, platform_dir):
+        if not os.path.isdir(root):
+            continue
+        for name in os.listdir(root):
+            if not _save_matches(name, stem):
+                continue
+            path = os.path.join(root, name)
+            try:
+                if os.path.islink(path) or os.path.isfile(path):
+                    os.unlink(path)
+                elif os.path.isdir(path):
+                    shutil.rmtree(path)
+                else:
+                    continue
+            except OSError:
+                continue
+            removed.append(os.path.relpath(path, emulation_root))
+    return removed
+
+
 def build_command(mapping: dict[str, Any], file_path: str) -> list[str]:
     launcher = mapping.get("launcher_path") or ""
     if not launcher or not os.path.exists(launcher):

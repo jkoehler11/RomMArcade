@@ -9,6 +9,7 @@ import mimetypes
 import os
 import posixpath
 import re
+import shutil
 import socket
 import threading
 import time
@@ -40,6 +41,7 @@ from .emudeck import (
     install_path,
     invalidate_cache as invalidate_emudeck,
     platform_mapping,
+    remove_game_saves,
     rom_file,
     rom_target_name,
     spawn,
@@ -211,6 +213,67 @@ class App:
         ids = self._game_ids()
         history = [entry for entry in self.state.history(100) if int(entry.get("rom_id") or 0) in ids]
         return history[:limit]
+
+    def uninstall(self, rom_id: int, remove_saves: bool = True) -> dict[str, Any]:
+        """Remove an installed ROM, and optionally its EmuDeck saves."""
+        entry = self.state.install_for(int(rom_id))
+        if not entry:
+            raise HttpError(404, "That game is not installed on this machine.")
+        for job in self.downloads.list():
+            if int(job.get("rom_id") or 0) == int(rom_id) and job.get("status") in (
+                "queued",
+                "downloading",
+                "extracting",
+            ):
+                raise HttpError(409, "That game is still installing.")
+        target = os.path.abspath(entry.get("path") or "")
+        mapping: dict[str, Any] = {}
+        try:
+            platform = self.resolve_platform(entry.get("platform") or entry.get("platform_slug"))
+            mapping = platform.get("local") or {}
+        except HttpError:
+            mapping = {}
+        emu = detect_emudeck(self.config.get().get("emudeck", {}))
+        allowed = [mapping.get("path") or "", emu.get("roms_root") or ""]
+        safe = False
+        for base in allowed:
+            if not base:
+                continue
+            try:
+                if os.path.commonpath([os.path.abspath(base), target]) == os.path.abspath(base):
+                    safe = True
+                    break
+            except ValueError:
+                continue
+        if not target or not safe:
+            raise HttpError(400, "Refusing to remove a path outside EmuDeck's ROM folders.")
+        target_is_file = os.path.isfile(target)
+        stem = os.path.basename(target.rstrip(os.sep))
+        if target_is_file:
+            stem = os.path.splitext(stem)[0]
+        if os.path.islink(target) or target_is_file:
+            os.unlink(target)
+        elif os.path.isdir(target):
+            shutil.rmtree(target)
+        elif os.path.exists(target):
+            raise HttpError(409, "That install is not a file or folder RomMArcade can remove.")
+        removed_saves: list[str] = []
+        if remove_saves and emu.get("detected"):
+            platform_dir = str(mapping.get("dir") or entry.get("platform_slug") or entry.get("platform") or "")
+            removed_saves = remove_game_saves(emu.get("root") or "", platform_dir, stem)
+        self.state.forget(int(rom_id))
+        self._cache_clear()
+        self.log(
+            f"uninstalled rom {rom_id} -> {entry.get('path')} "
+            f"(saves removed: {len(removed_saves)})"
+        )
+        return {
+            "removed": True,
+            "rom_id": int(rom_id),
+            "path": entry.get("path"),
+            "saves_removed": len(removed_saves),
+            "saves": removed_saves,
+        }
 
     def platforms(self) -> list[dict[str, Any]]:
         cached = self._cache_get("platforms", 90)
@@ -645,6 +708,14 @@ class App:
             removed = self.state.repair()
             self._cache_clear()
             return 200, JSON, {"removed": removed, "installs": self.game_installs()}
+
+        match = re.fullmatch(r"/api/installs/(\d+)/uninstall", path)
+        if method == "POST" and match:
+            data = body if isinstance(body, dict) else {}
+            return 200, JSON, self.uninstall(
+                int(match.group(1)),
+                bool(data.get("remove_saves", True)),
+            )
 
         if route == ("GET", "/api/downloads"):
             return 200, JSON, {"downloads": self.downloads.list()}

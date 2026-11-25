@@ -425,6 +425,41 @@ class IntegrationTests(unittest.TestCase):
         finally:
             self.call("/api/config", "PUT", {"emudeck": {"enabled": True}})
 
+    def test_14_uninstall_with_saves(self):
+        saves = os.path.join(self.emu, "saves/nes")
+        states = os.path.join(self.emu, "states/nes")
+        os.makedirs(saves, exist_ok=True)
+        os.makedirs(states, exist_ok=True)
+        save_file = os.path.join(saves, "1942 (Japan, USA).srm")
+        state_file = os.path.join(states, "1942 (Japan, USA).state")
+        with open(save_file, "wb") as handle:
+            handle.write(b"SAVE")
+        with open(state_file, "wb") as handle:
+            handle.write(b"STATE")
+        status, payload = self.call("/api/installs/180/uninstall", "POST", {"remove_saves": True})
+        self.assertEqual(status, 200, payload)
+        self.assertTrue(payload["removed"])
+        self.assertEqual(payload["saves_removed"], 2)
+        self.assertFalse(os.path.exists(os.path.join(self.emu, "roms/nes/1942 (Japan, USA).zip")))
+        self.assertFalse(os.path.exists(save_file))
+        self.assertFalse(os.path.exists(state_file))
+        _, installs = self.call("/api/installs")
+        self.assertFalse(any(i["rom_id"] == 180 for i in installs["installs"]))
+        _, detail = self.call("/api/roms/180")
+        self.assertIsNone(detail["rom"]["installed"])
+
+    def test_15_uninstall_keeps_saves_when_unchecked(self):
+        save_dir = os.path.join(self.emu, "saves/switch/Astral Chain")
+        os.makedirs(save_dir, exist_ok=True)
+        save_file = os.path.join(save_dir, "main.sav")
+        with open(save_file, "wb") as handle:
+            handle.write(b"SAVE")
+        status, payload = self.call("/api/installs/181/uninstall", "POST", {"remove_saves": False})
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(payload["saves_removed"], 0)
+        self.assertFalse(os.path.exists(os.path.join(self.emu, "roms/switch/Astral Chain")))
+        self.assertTrue(os.path.exists(save_file))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

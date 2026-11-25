@@ -457,11 +457,15 @@ async function renderGame(id, token) {
   const installJob = activeInstallJob(rom.id);
   if (!emuOn) {
     actions.push(h("a", { class: "btn", href: "#/emudeck" }, icon("settings"), "Turn on EmuDeck integration"));
+    if (installed) {
+      actions.push(h("button", { class: "btn danger", onClick: () => openUninstall(rom) }, icon("trash"), "Uninstall"));
+    }
   } else if (installJob) {
     actions.push(installProgressButton(installJob));
   } else if (installed) {
     actions.push(h("button", { class: "btn primary", onClick: () => playRom(rom.id) }, icon("play"), "Play"));
     actions.push(h("span", { class: "chip ok" }, icon("check"), "Installed"));
+    actions.push(h("button", { class: "btn danger", onClick: () => openUninstall(rom) }, icon("trash"), "Uninstall"));
   } else if (mapping.exists && mapping.launcher) {
     actions.push(h("button", { class: "btn primary", onClick: () => installRom(rom.id, { play: true }) }, icon("download"), "Install & play"));
     actions.push(h("button", { class: "btn", onClick: () => installRom(rom.id) }, "Install only"));
@@ -617,6 +621,42 @@ async function onSearch(event) {
 }
 
 // -------------------------------------------------------------- actions ---
+function openUninstall(rom) {
+  const removeSaves = h("input", { type: "checkbox", checked: true });
+  const confirm = h("button", { class: "btn danger" }, icon("trash"), "Uninstall");
+  confirm.addEventListener("click", async () => {
+    confirm.disabled = true;
+    confirm.textContent = "Removing…";
+    try {
+      const result = await api.uninstall(rom.id, removeSaves.checked);
+      closeModal();
+      state.installs = null;
+      state.platforms = null;
+      const saveNote = result.saves_removed
+        ? ` and removed ${result.saves_removed} save${result.saves_removed === 1 ? "" : "s"}`
+        : "";
+      toast(`Uninstalled ${rom.name}${saveNote}`, "good");
+      await route();
+    } catch (error) {
+      confirm.disabled = false;
+      confirm.replaceChildren(icon("trash"), "Uninstall");
+      toast(error.message, "bad");
+    }
+  });
+  openModal(h("div", { class: "sheet" },
+    h("h2", null, `Uninstall ${rom.name}?`),
+    h("p", null, "This removes the installed game from EmuDeck's ROM folder. It cannot be undone from RomMArcade."),
+    h("label", { class: "switch", style: { margin: "18px 0" } },
+      removeSaves,
+      h("span", null, "Also remove saves and save states"),
+    ),
+    h("div", { class: "row end" },
+      h("button", { class: "btn ghost", onClick: closeModal }, "Cancel"),
+      confirm,
+    ),
+  ));
+}
+
 async function installRom(romId, { play = false } = {}) {
   try {
     const result = await api.install(romId);
