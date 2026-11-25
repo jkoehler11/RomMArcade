@@ -49,8 +49,9 @@ RomM server  ──HTTP──▶  RomMArcade  ──files──▶  ~/Emulation/
 Requirements: Linux, macOS or Windows; Python 3.10+ only if building from source. EmuDeck is
 needed for installing and launching games, and RomM 5.x or ROMulus is the server side.
 
-Prebuilt builds are produced by the `desktop` GitHub Actions workflow: download the artifact for
-your platform, then:
+Prebuilt builds are produced by the `desktop` GitHub Actions workflow and published on the
+[Releases](../../releases) page where available. Download the artifact or release bundle for your
+platform, then:
 
 - **Linux:** extract the `RomMArcade` folder and run `./RomMArcade`. `packaging/install_desktop.sh`
   installs it under `~/.local/share/rommarcade-desktop` and adds a menu launcher.
