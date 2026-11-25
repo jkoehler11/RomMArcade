@@ -12,6 +12,10 @@ license = { text = "MIT" }
 authors = [{ name = "jkoehler11" }]
 dependencies = []
 
+[project.optional-dependencies]
+desktop = ["pywebview>=5.0"]
+build = ["pywebview>=5.0", "pyinstaller>=6.10"]
+
 [project.scripts]
 rommarcade = "rommarcade.__main__:main"
 

@@ -1,0 +1,58 @@
+name: desktop
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            label: Linux x86_64
+            artifact: RomMArcade-linux-x86_64
+            path: dist/RomMArcade
+          - os: macos-14
+            label: macOS arm64
+            artifact: RomMArcade-macos-arm64
+            path: dist/RomMArcade.app
+          - os: windows-2022
+            label: Windows x64
+            artifact: RomMArcade-windows-x64
+            path: dist/RomMArcade
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Linux webview dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgirepository1.0-dev libcairo2-dev pkg-config \
+            libgtk-3-dev libwebkit2gtk-4.1-dev gir1.2-webkit2-4.1
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[build]"
+
+      - name: PyGObject for the GTK backend
+        if: runner.os == 'Linux'
+        run: python -m pip install pygobject
+
+      - name: Build
+        run: python packaging/build_desktop.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.path }}
+          if-no-files-found: error

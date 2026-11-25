@@ -2,17 +2,17 @@
 
 **Your RomM library, in an arcade shell.**
 
-RomMArcade is a new, self-hosted front-end for [RomM](https://github.com/rommapp/romm) (and its
-ROMulus fork) built around two ideas: a server is a **URL**, and EmuDeck already knows how to play.
-It browses your RomM library, installs games into EmuDeck's own ROM folders, downloads BIOS, and
-starts EmuDeck's launchers — no second emulator configuration to keep in sync.
+RomMArcade is a desktop app for [RomM](https://github.com/rommapp/romm) (and its ROMulus fork)
+built around two ideas: a server is a **URL**, and EmuDeck already knows how to play. It browses
+your RomM library, installs games into EmuDeck's own ROM folders, downloads BIOS, and starts
+EmuDeck's launchers — no second emulator configuration to keep in sync.
 
-It is a local service plus a web UI, written against the Python standard library and vanilla
-JavaScript. There is no package manager step, no build step, and no database.
+It runs as a native window on Linux, macOS and Windows, with the same Python service and vanilla
+JavaScript UI behind it. There is no database and no browser tab; the window is the app.
 
 ```
 RomM server  ──HTTP──▶  RomMArcade  ──files──▶  ~/Emulation/roms/<system>
-   (URL)                (local UI)   ──exec───▶  Emulation/tools/launchers/<emu>.sh
+   (URL)               (desktop app)  ──exec───▶  Emulation/tools/launchers/<emu>.sh
 ```
 
 ## What it does
@@ -43,42 +43,67 @@ RomM server  ──HTTP──▶  RomMArcade  ──files──▶  ~/Emulation/
 
 ## Install
 
-Requirements: Linux with Python 3.10+ and an existing [EmuDeck](https://www.emudeck.com/) install
-for actually playing games. RomM 5.x or ROMulus is the server side.
+Requirements: Linux, macOS or Windows; Python 3.10+ only if building from source. EmuDeck is
+needed for installing and launching games, and RomM 5.x or ROMulus is the server side.
+
+Prebuilt builds are produced by the `desktop` GitHub Actions workflow: download the artifact for
+your platform, then:
+
+- **Linux:** extract the `RomMArcade` folder and run `./RomMArcade`. `packaging/install_desktop.sh`
+  installs it under `~/.local/share/rommarcade-desktop` and adds a menu launcher.
+- **macOS:** open `RomMArcade.app` and drag it to Applications. The build is unsigned, so use
+  **Open** from the context menu the first time.
+- **Windows:** run `RomMArcade\RomMArcade.exe`; pin it to Start if you want.
+
+To build from source on any platform:
 
 ```bash
 git clone https://github.com/jkoehler11/RomMArcade.git
 cd RomMArcade
-./packaging/install.sh
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e ".[build]"
+python packaging/build_desktop.py
 ```
 
-The installer copies the app to `~/.local/share/rommarcade`, puts `rommarcade`,
-`rommarcade-open` and `rommarcade-launch` in `~/.local/bin`, installs the URL handler, and enables
-a `systemd --user` service. Nothing is installed system-wide and nothing needs root.
-
-Then open <http://127.0.0.1:8790> and follow the setup wizard:
-
-1. Enter the RomM address, for example `http://192.168.86.30:7676`.
-2. Pair the device (RomM shows a short code), or paste a client token / use a password.
-3. Confirm the detected EmuDeck root and enter the arcade.
+Linux also needs WebKitGTK and PyGObject from the distribution, for example on Arch:
 
 ```bash
-rommarcade status      # is the service up, is RomM reachable
-rommarcade where       # config and data directories
-rommarcade open 'rommarcade://open?rom=180'
+sudo pacman -S webkit2gtk-4.1 python-gobject
 ```
 
-Config lives in `~/.config/rommarcade/config.json` (mode 600). Data — installs, covers, logs — lives
-in `~/.local/share/rommarcade`.
+Run the app:
 
-### One service, one machine
+```bash
+# from the build
+./dist/RomMArcade/RomMArcade
+# or from a source checkout with the desktop extra
+rommarcade app
+```
 
-Settings are per service installation, not per browser. RomMArcade discovers EmuDeck, writes ROMs
-and starts launchers on the machine running the service. If you open the same URL from another
-computer, that browser remote-controls the host: installs land in the host's EmuDeck and games play
-on the host. To use a second PC with its own EmuDeck, run a second RomMArcade instance there with
-its own config. The service listens on `0.0.0.0` and has no login, so keep it on a trusted LAN or
-firewall the port.
+The setup wizard is the same: enter the RomM address, pair or paste a token, confirm EmuDeck, and
+you are in.
+
+Config and data are per installation:
+
+- Linux: `~/.config/rommarcade` and `~/.local/share/rommarcade`
+- macOS: `~/Library/Application Support/RomMArcade`
+- Windows: `%APPDATA%\RomMArcade` and `%LOCALAPPDATA%\RomMArcade`
+
+### One app, one machine
+
+Because this is a desktop app, each computer runs its own copy and uses its own EmuDeck, ROM
+folders and launchers. There is no shared browser profile and no remote service to point at. Two
+desktops can browse the same RomM library while installing and playing against their own local
+emulators.
+
+The older headless mode is still available for a Steam Deck, NAS or remote browser setup:
+
+```bash
+rommarcade serve --host 0.0.0.0 --port 8790
+```
+
+That mode is a local web service; it does not execute anything on the computer viewing the page.
 
 ## URL support
 
@@ -160,7 +185,7 @@ hands off files it did not create.
 ## Development
 
 ```bash
-python3 -m unittest tests.test_integration -v   # 19 tests, no network
+python3 -m unittest tests.test_integration -v   # 20 tests, no network
 ROMARCADE_HOME=/tmp/rommarcade-dev python3 -m rommarcade serve --port 8791
 ```
 
@@ -179,7 +204,13 @@ rommarcade/
 ├── state.py        # installs and play history
 ├── deeplink.py     # rommarcade:// parsing and the consume-once queue
 ├── server.py       # local JSON API + static UI
+├── desktop.py      # native webview window and local service lifecycle
 └── web/            # index.html, app.css, app.js (no framework, no build)
+
+packaging/
+├── build_desktop.py  # PyInstaller build for the current OS
+├── RomMArcade.spec   # bundle recipe (app, .app, .exe)
+└── install_desktop.sh
 ```
 
 ## License

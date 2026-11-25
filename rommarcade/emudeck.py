@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from typing import Any
@@ -192,6 +193,13 @@ class EmuDeckError(RuntimeError):
 
 
 def emudeck_settings_path() -> str:
+    if sys.platform == "win32":
+        root = os.environ.get("APPDATA") or os.path.expanduser("~")
+        return os.path.join(root, "EmuDeck", "settings.json")
+    if sys.platform == "darwin":
+        return os.path.join(
+            os.path.expanduser("~"), "Library", "Application Support", "EmuDeck", "settings.json"
+        )
     return os.path.join(
         os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")),
         "EmuDeck",
@@ -227,6 +235,23 @@ def resolve_roots(config: dict[str, Any] | None = None) -> dict[str, Any]:
             os.path.join(home, ".local", "share", "Emulation"),
         ]
     )
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA") or home
+        local = os.environ.get("LOCALAPPDATA") or appdata
+        candidates.extend(
+            [
+                os.path.join(appdata, "EmuDeck", "Emulation"),
+                os.path.join(local, "EmuDeck", "Emulation"),
+                os.path.join(home, "AppData", "Roaming", "EmuDeck", "Emulation"),
+            ]
+        )
+    elif sys.platform == "darwin":
+        candidates.extend(
+            [
+                os.path.join(home, "Library", "Application Support", "EmuDeck", "Emulation"),
+                os.path.join(home, "Library", "Application Support", "Emulation"),
+            ]
+        )
     emulation_root = ""
     for candidate in candidates:
         if candidate and os.path.isdir(candidate):
@@ -338,8 +363,16 @@ def _launcher_binary_present(stem: str) -> bool:
 def discover_launchers(launchers_root: str, available_cores: set[str]) -> list[dict[str, Any]]:
     if not os.path.isdir(launchers_root):
         return []
+    patterns = ["*.sh"]
+    if sys.platform == "win32":
+        patterns.extend(["*.bat", "*.cmd"])
+    elif sys.platform == "darwin":
+        patterns.extend(["*.command"])
     seen: dict[str, dict[str, Any]] = {}
-    for path in sorted(glob.glob(os.path.join(launchers_root, "*.sh"))):
+    paths = []
+    for pattern in patterns:
+        paths.extend(sorted(glob.glob(os.path.join(launchers_root, pattern))))
+    for path in paths:
         stem = os.path.splitext(os.path.basename(path))[0]
         real = os.path.realpath(path)
         if real in {entry["real_path"] for entry in seen.values()}:
@@ -357,21 +390,36 @@ def discover_launchers(launchers_root: str, available_cores: set[str]) -> list[d
 
 
 def discover_cores() -> list[str]:
+    home = os.path.expanduser("~")
     roots = [
-        os.path.expanduser("~/.var/app/org.libretro.RetroArch/config/retroarch/cores"),
-        os.path.expanduser("~/.config/retroarch/cores"),
-        os.path.expanduser("~/Emulation/tools/retroarch/cores"),
+        os.path.join(home, ".var/app/org.libretro.RetroArch/config/retroarch/cores"),
+        os.path.join(home, ".config/retroarch/cores"),
+        os.path.join(home, "Emulation/tools/retroarch/cores"),
     ]
+    extensions = [".so"]
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA") or home
+        roots.extend([
+            os.path.join(appdata, "RetroArch", "cores"),
+            os.path.join(home, "AppData", "Roaming", "RetroArch", "cores"),
+        ])
+        extensions = [".dll"]
+    elif sys.platform == "darwin":
+        roots.extend([
+            os.path.join(home, "Library", "Application Support", "RetroArch", "cores"),
+        ])
+        extensions = [".dylib"]
     found: set[str] = set()
     for root in roots:
         if not os.path.isdir(root):
             continue
-        for path in glob.glob(os.path.join(root, "*.so")):
-            name = os.path.basename(path)
-            if name.endswith("_libretro.so"):
-                found.add(name[: -len("_libretro.so")])
-            else:
-                found.add(os.path.splitext(name)[0])
+        for extension in extensions:
+            for path in glob.glob(os.path.join(root, "*" + extension)):
+                name = os.path.basename(path)
+                stem = name[: -len(extension)]
+                if stem.endswith("_libretro"):
+                    stem = stem[: -len("_libretro")]
+                found.add(stem)
     return sorted(found)
 
 
@@ -513,7 +561,10 @@ def build_command(mapping: dict[str, Any], file_path: str) -> list[str]:
         raise EmuDeckError(
             f"No EmuDeck launcher is installed for {mapping.get('name') or 'this platform'}."
         )
-    command = [launcher]
+    if sys.platform == "win32" and launcher.lower().endswith((".bat", ".cmd")):
+        command = [os.environ.get("COMSPEC", "cmd.exe"), "/c", launcher]
+    else:
+        command = [launcher]
     if mapping.get("launcher") == "retroarch" and mapping.get("core"):
         command += ["-L", mapping["core"]]
     command.append(file_path)
@@ -521,32 +572,39 @@ def build_command(mapping: dict[str, Any], file_path: str) -> list[str]:
 
 
 def spawn(command: list[str], log_file: str, env: dict[str, str] | None = None) -> int:
-    """Start an emulator detached from the service, in the user's GUI session."""
+    """Start an emulator detached from the app, in the user's GUI session."""
     user_env = dict(os.environ if env is None else env)
     user_env.setdefault("HOME", os.path.expanduser("~"))
-    runtime = user_env.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
-    user_env["XDG_RUNTIME_DIR"] = runtime
-    if not user_env.get("WAYLAND_DISPLAY") and os.path.isdir(runtime):
-        for socket in sorted(glob.glob(os.path.join(runtime, "wayland-*"))):
-            if not socket.endswith(".lock"):
-                user_env["WAYLAND_DISPLAY"] = os.path.basename(socket)
-                break
-    user_env.setdefault("DISPLAY", ":0")
-    user_env["PATH"] = user_env.get("PATH", "") + ":" + os.path.expanduser("~/.local/bin")
+    if sys.platform.startswith("linux"):
+        runtime = user_env.get("XDG_RUNTIME_DIR") or (
+            f"/run/user/{os.getuid()}" if hasattr(os, "getuid") else ""
+        )
+        if runtime:
+            user_env["XDG_RUNTIME_DIR"] = runtime
+            if not user_env.get("WAYLAND_DISPLAY") and os.path.isdir(runtime):
+                for socket in sorted(glob.glob(os.path.join(runtime, "wayland-*"))):
+                    if not socket.endswith(".lock"):
+                        user_env["WAYLAND_DISPLAY"] = os.path.basename(socket)
+                        break
+        user_env.setdefault("DISPLAY", ":0")
+        user_env["PATH"] = user_env.get("PATH", "") + ":" + os.path.expanduser("~/.local/bin")
     os.makedirs(os.path.dirname(log_file) or ".", exist_ok=True)
     handle = open(log_file, "ab", buffering=0)
     try:
         handle.write(
             f"\n--- {time.strftime('%Y-%m-%d %H:%M:%S')} rommarcade: {' '.join(command)}\n".encode()
         )
-        process = subprocess.Popen(
-            command,
-            stdout=handle,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-            start_new_session=True,
-            env=user_env,
-        )
+        kwargs: dict[str, Any] = {
+            "stdout": handle,
+            "stderr": subprocess.STDOUT,
+            "stdin": subprocess.DEVNULL,
+            "env": user_env,
+        }
+        if sys.platform == "win32":
+            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+        else:
+            kwargs["start_new_session"] = True
+        process = subprocess.Popen(command, **kwargs)
     finally:
         handle.close()
     return process.pid

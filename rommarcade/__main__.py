@@ -19,6 +19,13 @@ from .server import run
 
 
 def _local_base() -> str:
+    try:
+        with open(os.path.join(data_dir(), "desktop-port"), "r", encoding="utf-8") as handle:
+            port = int(handle.read().strip() or 0)
+        if port:
+            return f"http://127.0.0.1:{port}"
+    except (OSError, ValueError):
+        pass
     cfg = ConfigStore().get()
     port = int(cfg.get("web", {}).get("port") or 8790)
     return f"http://127.0.0.1:{port}"
@@ -35,6 +42,12 @@ def _request_json(method: str, url: str, body: dict | None = None, timeout: floa
     with urllib.request.urlopen(request, timeout=timeout) as response:
         raw = response.read()
     return json.loads(raw.decode()) if raw else {}
+
+
+def cmd_app(args: argparse.Namespace) -> int:
+    from .desktop import run as run_desktop
+
+    return run_desktop(port=int(args.port or 0), debug=bool(args.debug), reuse=not args.no_reuse)
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
@@ -104,8 +117,7 @@ def cmd_open(args: argparse.Namespace) -> int:
         return 0
     except (urllib.error.URLError, OSError):
         print(
-            f"{PRODUCT} is not answering on {base}. Start it with `rommarcade serve` "
-            "or `systemctl --user start rommarcade`.",
+            f"{PRODUCT} is not answering on {base}. Start the desktop app with `rommarcade app`.",
             file=sys.stderr,
         )
         return 2
@@ -149,7 +161,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"{PRODUCT} {__version__}")
     sub = parser.add_subparsers(dest="command")
 
-    serve = sub.add_parser("serve", help="run the local service and web UI")
+    app_cmd = sub.add_parser("app", aliases=["desktop"], help="open RomMArcade in a native desktop window")
+    app_cmd.add_argument("--port", type=int, default=0, help="local port; 0 picks a free one")
+    app_cmd.add_argument("--debug", action="store_true", help="enable the webview debug console")
+    app_cmd.add_argument("--no-reuse", action="store_true", help="always start a new local service")
+    app_cmd.set_defaults(func=cmd_app)
+
+    serve = sub.add_parser("serve", help="run the local service without a window (headless)")
     serve.add_argument("--host", default="")
     serve.add_argument("--port", type=int, default=0)
     serve.add_argument("--open-url", default="", help="queue a rommarcade:// URL at startup")
@@ -174,7 +192,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if not getattr(args, "command", None):
-        args = parser.parse_args(["serve"])
+        args = parser.parse_args(["app"])
     return int(args.func(args))
 
 

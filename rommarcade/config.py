@@ -12,6 +12,7 @@ import copy
 import json
 import os
 import re
+import sys
 import threading
 import uuid
 from dataclasses import dataclass
@@ -31,18 +32,36 @@ def _xdg(env: str, fallback: str) -> str:
     return value or fallback
 
 
+def _config_base() -> str:
+    if sys.platform == "win32":
+        root = os.environ.get("APPDATA") or os.path.expanduser("~")
+        return os.path.join(root, "RomMArcade")
+    if sys.platform == "darwin":
+        return os.path.join(os.path.expanduser("~"), "Library", "Application Support", "RomMArcade")
+    return os.path.join(_xdg("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "rommarcade")
+
+
+def _data_base() -> str:
+    if sys.platform == "win32":
+        root = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or os.path.expanduser("~")
+        return os.path.join(root, "RomMArcade")
+    if sys.platform == "darwin":
+        return os.path.join(os.path.expanduser("~"), "Library", "Application Support", "RomMArcade")
+    return os.path.join(_xdg("XDG_DATA_HOME", os.path.expanduser("~/.local/share")), "rommarcade")
+
+
 def config_dir() -> str:
     override = os.environ.get("ROMARCADE_HOME", "").strip()
     if override:
         return os.path.abspath(override)
-    return os.path.join(_xdg("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "rommarcade")
+    return _config_base()
 
 
 def data_dir() -> str:
     override = os.environ.get("ROMARCADE_HOME", "").strip()
     if override:
         return os.path.abspath(override)
-    return os.path.join(_xdg("XDG_DATA_HOME", os.path.expanduser("~/.local/share")), "rommarcade")
+    return _data_base()
 
 
 def config_path() -> str:

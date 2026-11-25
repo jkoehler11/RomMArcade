@@ -16,6 +16,7 @@ import urllib.parse
 import urllib.request
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest.mock import patch
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 import sys
@@ -216,6 +217,18 @@ class UnitTests(unittest.TestCase):
         self.assertFalse(_is_game_rom({"platform_fs_slug": "xbox360", "files": [{"file_name": "xenia.sh", "is_top_level": True}]}))
         self.assertFalse(_is_game_rom({"platform_fs_slug": "xbox360", "files": [{"file_name": "LICENSE", "is_top_level": True}]}))
         self.assertFalse(_is_game_rom({"platform_fs_slug": "xbox360", "files": [{"file_name": "0b0a5c5c", "is_top_level": False}]}))
+
+    def test_platform_config_dirs(self):
+        with patch.dict(os.environ, {"ROMARCADE_HOME": ""}):
+            with patch("rommarcade.config.sys.platform", "darwin"):
+                self.assertTrue(config_mod.config_dir().endswith("Library/Application Support/RomMArcade"))
+                self.assertTrue(config_mod.data_dir().endswith("Library/Application Support/RomMArcade"))
+            with patch("rommarcade.config.sys.platform", "win32"), patch.dict(
+                os.environ,
+                {"APPDATA": "C:/Users/test/AppData/Roaming", "LOCALAPPDATA": "C:/Users/test/AppData/Local"},
+            ):
+                self.assertTrue(config_mod.config_dir().endswith("AppData/Roaming/RomMArcade"))
+                self.assertTrue(config_mod.data_dir().endswith("AppData/Local/RomMArcade"))
 
 
 class IntegrationTests(unittest.TestCase):
