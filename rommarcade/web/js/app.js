@@ -211,15 +211,16 @@ async function renderLibrary(token) {
   if (token !== state.renderToken) return;
   const roms = recent.items || [];
   const withGames = platforms.filter((p) => p.is_game_platform !== false && Number(p.game_count ?? p.rom_count) > 0);
+  const playable = state.status?.emudeck?.enabled !== false;
   const featured = roms.find((r) => r.installed) || roms[0] || installs[0];
 
   const frag = document.createDocumentFragment();
   frag.append(heroBlock(featured, installs.length));
   frag.append(emudeckStrip(withGames));
   frag.append(platformRail(withGames, ""));
-  if (roms.length) frag.append(rail("Recently added", `${recent.total} in library`, roms.map((r) => gameCard(r))));
+  if (roms.length) frag.append(rail("Recently added", `${recent.total} in library`, roms.map((r) => gameCard(r, { showPlay: playable }))));
   if (installs.length) {
-    frag.append(rail("Ready to play", `${installs.length} local`, installs.slice(0, 12).map((entry) => gameCard(pseudoRomFromInstall(entry)))));
+    frag.append(rail("Ready to play", `${installs.length} local`, installs.slice(0, 12).map((entry) => gameCard(pseudoRomFromInstall(entry), { showPlay: playable }))));
   }
   if (!roms.length && !installs.length) {
     frag.append(emptyState({
@@ -246,6 +247,7 @@ function heroBlock(rom, localCount) {
     );
   }
   const installed = Boolean(rom.installed);
+  const playable = state.status?.emudeck?.enabled !== false;
   return h("section", { class: "hero" },
     h("div", { class: "hero-art" },
       rom.cover ? h("img", { src: `/api/cover/${rom.id}?size=large`, alt: "", loading: "eager" }) : null,
@@ -259,9 +261,11 @@ function heroBlock(rom, localCount) {
         localCount ? h("span", null, h("b", null, String(localCount)), " games ready on this PC") : null,
       ),
       h("div", { class: "hero-actions" },
-        installed
-          ? h("button", { class: "btn primary", onClick: () => playRom(rom.id) }, icon("play"), "Play now")
-          : h("button", { class: "btn primary", onClick: () => installRom(rom.id, { play: true }) }, icon("download"), "Install & play"),
+        playable
+          ? (installed
+            ? h("button", { class: "btn primary", onClick: () => playRom(rom.id) }, icon("play"), "Play now")
+            : h("button", { class: "btn primary", onClick: () => installRom(rom.id, { play: true }) }, icon("download"), "Install & play"))
+          : h("a", { class: "btn primary", href: "#/emudeck" }, icon("settings"), "Turn on EmuDeck"),
         h("a", { class: "btn ghost", href: `#/game/${rom.id}` }, "Details", icon("arrow")),
       ),
     ),
@@ -390,7 +394,7 @@ async function renderPlatform(slug, token) {
     }));
   }
   body.push(data.items?.length
-    ? h("div", { class: "grid" }, data.items.map((rom) => gameCard(rom)))
+    ? h("div", { class: "grid" }, data.items.map((rom) => gameCard(rom, { showPlay: enabled })))
     : emptyState({ glyph: "cart", title: "No games here yet", body: "This platform exists in RomM but has no visible games on this server." }));
   if (data.total > (data.items?.length || 0)) {
     body.push(h("div", { class: "row", style: { justifyContent: "center", marginTop: "26px" } },
@@ -405,7 +409,8 @@ async function loadMorePlatform(platform, data, button) {
   try {
     const more = await api.roms({ platform: platform.fs_slug || platform.slug, limit: 150, offset: data.items.length, sort: state.sort[platform.fs_slug] || "name" });
     const grid = viewEl.querySelector(".grid");
-    (more.items || []).forEach((rom) => grid.append(gameCard(rom)));
+    const playable = state.status?.emudeck?.enabled !== false;
+    (more.items || []).forEach((rom) => grid.append(gameCard(rom, { showPlay: playable })));
     data.items.push(...(more.items || []));
     if (data.items.length >= data.total) button.parentElement.remove();
   } catch (error) { toast(error.message, "bad"); }
@@ -533,7 +538,7 @@ async function renderInstalled(token) {
       h("p", { class: "eyebrow" }, "On this machine"),
       h("h1", { class: "page-title" }, "Installed"),
       h("p", { class: "page-sub" }, installs.length
-        ? `${installs.length} game${installs.length === 1 ? "" : "s"} ready in EmuDeck folders`
+        ? `${installs.length} game${installs.length === 1 ? "" : "s"} ready in EmuDeck folders${state.status?.emudeck?.enabled === false ? " (integration off)" : ""}`
         : "Nothing installed by RomMArcade yet"),
     ),
     h("div", { class: "page-actions" },
@@ -542,7 +547,8 @@ async function renderInstalled(token) {
   );
   const body = [head];
   if (installs.length) {
-    body.push(h("div", { class: "grid" }, installs.map((entry) => gameCard(pseudoRomFromInstall(entry)))));
+    const playable = state.status?.emudeck?.enabled !== false;
+    body.push(h("div", { class: "grid" }, installs.map((entry) => gameCard(pseudoRomFromInstall(entry), { showPlay: playable }))));
   } else {
     body.push(emptyState({
       glyph: "download",
@@ -586,7 +592,7 @@ async function renderSearch(query, token) {
     ),
   );
   viewEl.replaceChildren(head, data.items?.length
-    ? h("div", { class: "grid" }, data.items.map((rom) => gameCard(rom)))
+    ? h("div", { class: "grid" }, data.items.map((rom) => gameCard(rom, { showPlay: state.status?.emudeck?.enabled !== false })))
     : emptyState({ glyph: "search", title: "Nothing matched", body: "Try a shorter title, or search for the platform name." }));
 }
 
