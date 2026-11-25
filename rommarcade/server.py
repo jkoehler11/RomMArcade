@@ -318,6 +318,8 @@ class App:
             items = data.get("items") or []
             if items:
                 rom = items[0]
+        if not _is_game_rom(rom):
+            raise HttpError(404, "That RomM entry is not a game.")
         enriched = self.enrich_rom(rom, detail=True)
         return self._cache_set(key, enriched)
 
