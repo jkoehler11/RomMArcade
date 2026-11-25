@@ -115,7 +115,7 @@ That mode is a local web service; it does not execute anything on the computer v
 The setup wizard and **Settings → Server** accept:
 
 ```
-192.168.86.30:7676                 → http://192.168.86.30:7676
+romm.local:7676                    → http://romm.local:7676
 http://romm.lan:7676/              → http://romm.lan:7676
 https://romm.example.com/romm/     → https://romm.example.com/romm
 http://host:7676/api               → http://host:7676

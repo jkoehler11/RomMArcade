@@ -1151,7 +1151,7 @@ function setupServerStep(card, setup) {
   const input = h("input", {
     class: "input",
     type: "url",
-    placeholder: "http://192.168.86.30:7676",
+    placeholder: "http://romm.local:7676",
     value: setup.url,
     autocomplete: "url",
     spellcheck: "false",

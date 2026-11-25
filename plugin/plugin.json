@@ -1,7 +1,7 @@
 {
   "id": "rommarcade",
   "name": "RomMArcade",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "description": "Open this game in RomMArcade, the EmuDeck-native arcade front-end.",
   "author": "jkoehler11",
   "homepage": "https://github.com/jkoehler11/RomMArcade",
