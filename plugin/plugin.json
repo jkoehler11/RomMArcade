@@ -1,0 +1,35 @@
+{
+  "id": "rommarcade",
+  "name": "RomMArcade",
+  "version": "1.0.0",
+  "description": "Open this game in RomMArcade, the EmuDeck-native arcade front-end.",
+  "author": "jkoehler11",
+  "homepage": "https://github.com/jkoehler11/RomMArcade",
+  "actions": [
+    {
+      "id": "play",
+      "label": "Play in RomMArcade",
+      "url": "rommarcade://open?rom={rom_id}&platform={platform_slug}&name={rom_name}{setting.extra_query}",
+      "slot": "game.play",
+      "platforms": [],
+      "enabled_by": "enabled"
+    }
+  ],
+  "settings": [
+    {
+      "key": "enabled",
+      "label": "Show the button",
+      "type": "boolean",
+      "default": true,
+      "help": "Hide the Play entry without uninstalling the plugin."
+    },
+    {
+      "key": "extra_query",
+      "label": "Extra URL parameters",
+      "type": "text",
+      "default": "",
+      "placeholder": "&play=1",
+      "help": "Appended to the RomMArcade link. Use &play=1 to install the game and start it in one press."
+    }
+  ]
+}

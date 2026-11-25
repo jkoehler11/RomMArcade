@@ -1,0 +1,1419 @@
+// RomMArcade web client: hash routing, library views, installs, deep links.
+import { api } from "./api.js";
+import {
+  h, icon, toast, openModal, closeModal, emptyState, coverImage, gameCard,
+  platformCard, skeletonGrid, fmtBytes, fmtSpeed, timeAgo, shortDate, debounce, initials,
+} from "./ui.js";
+
+const state = {
+  status: null,
+  config: null,
+  platforms: null,
+  installs: null,
+  emudeck: null,
+  downloads: [],
+  history: null,
+  renderToken: 0,
+  seenDone: new Set(),
+  seenErrors: new Set(),
+  pendingPlay: new Map(),
+  autoPlay: null,
+  trayHidden: 0,
+  timer: null,
+  setup: null,
+  sort: {},
+};
+
+const viewEl = document.getElementById("view");
+const topbar = document.getElementById("topbar");
+const searchEl = document.getElementById("search");
+const trayEl = document.getElementById("downloadTray");
+
+// ---------------------------------------------------------------- boot ----
+async function boot() {
+  let status = null;
+  try {
+    status = await api.status();
+  } catch (error) {
+    showFatal(error.message);
+    return;
+  }
+  state.status = status;
+  try {
+    const cfg = await api.config();
+    state.config = cfg.config;
+  } catch { state.config = null; }
+  finishBoot();
+  if (!status.configured) {
+    if (location.hash !== "#/setup") location.hash = "#/setup";
+  }
+  window.addEventListener("hashchange", route);
+  window.addEventListener("resize", debounce(renderTray, 150));
+  document.addEventListener("keydown", onKey);
+  document.addEventListener("click", onDocumentClick);
+  window.addEventListener("rommarcade:play", (event) => playRom(event.detail.romId));
+  window.addEventListener("rommarcade:install", (event) => installRom(event.detail.romId, { play: event.detail.play }));
+  searchEl.addEventListener("input", debounce(onSearch, 320));
+  await route();
+  startTimers();
+}
+
+function finishBoot() {
+  document.getElementById("boot")?.classList.add("done");
+  topbar.hidden = false;
+  viewEl.hidden = false;
+  paintServerPill();
+}
+
+function showFatal(message) {
+  document.getElementById("boot")?.classList.add("done");
+  topbar.hidden = false;
+  viewEl.hidden = false;
+  viewEl.replaceChildren(emptyState({
+    glyph: "alert",
+    title: "RomMArcade cannot reach its own service",
+    body: message,
+    action: h("button", { class: "btn primary", onClick: () => location.reload() }, "Try again"),
+  }));
+}
+
+function startTimers() {
+  clearInterval(state.timer);
+  state.timer = setInterval(async () => {
+    await pollDownloads();
+    await pollDeeplink();
+    if (Math.random() < 0.12) refreshStatus();
+  }, 1400);
+}
+
+async function refreshStatus() {
+  try {
+    state.status = await api.status();
+    paintServerPill();
+  } catch { /* service restarting */ }
+}
+
+function paintServerPill() {
+  const pill = document.getElementById("serverPill");
+  if (!pill) return;
+  const server = state.status?.server || {};
+  pill.classList.remove("ok", "bad");
+  if (!server.configured) {
+    pill.querySelector("span").textContent = "No server";
+    pill.classList.add("bad");
+  } else if (server.reachable) {
+    pill.querySelector("span").textContent = server.name || hostOf(server.url);
+    pill.classList.add("ok");
+  } else {
+    pill.querySelector("span").textContent = "Offline";
+    pill.classList.add("bad");
+  }
+  pill.title = server.configured
+    ? `${server.url}${server.reachable ? "" : " — " + (server.error || "unreachable")}`
+    : "Connect a RomM server";
+}
+
+// ---------------------------------------------------------------- route ---
+function parseRoute() {
+  const raw = location.hash.replace(/^#\/?/, "");
+  const [name, ...rest] = raw.split("/");
+  return { name: name || "library", args: rest.map((part) => decodeURIComponent(part)) };
+}
+
+function setRoute(name, ...args) {
+  const suffix = args.length ? "/" + args.map((a) => encodeURIComponent(a)).join("/") : "";
+  location.hash = `#/${name}${suffix}`;
+}
+
+async function route() {
+  const current = parseRoute();
+  setActiveNav(current);
+  const token = ++state.renderToken;
+  viewEl.replaceChildren();
+  window.scrollTo({ top: 0, behavior: "instant" in window ? "instant" : "auto" });
+  try {
+    if (current.name === "setup") await renderSetup();
+    else if (current.name === "platform") await renderPlatform(current.args[0] || "", token);
+    else if (current.name === "game") await renderGame(current.args[0] || "", token);
+    else if (current.name === "installed") await renderInstalled(token);
+    else if (current.name === "settings") await renderSettings(current.args[0] || "server", token);
+    else if (current.name === "search") await renderSearch(current.args.join("/"), token);
+    else await renderLibrary(token);
+  } catch (error) {
+    if (token !== state.renderToken) return;
+    viewEl.replaceChildren(emptyState({
+      glyph: "alert",
+      title: "That view could not load",
+      body: error.message || String(error),
+      action: h("button", { class: "btn", onClick: () => route() }, icon("refresh"), "Retry"),
+    }));
+  }
+}
+
+function setActiveNav(current) {
+  document.querySelectorAll("[data-nav]").forEach((el) => {
+    const key = el.dataset.nav;
+    const on = (key === "library" && ["library", "platform", "game", "search"].includes(current.name))
+      || (key === "installed" && current.name === "installed")
+      || (key === "settings" && current.name === "settings");
+    el.classList.toggle("active", on);
+  });
+  if (current.name === "setup") searchEl.value = "";
+}
+
+// ---------------------------------------------------------------- data ----
+async function getPlatforms(force = false) {
+  if (!state.platforms || force) {
+    const data = await api.platforms();
+    state.platforms = data.platforms || [];
+  }
+  return state.platforms;
+}
+
+async function getInstalls(force = false) {
+  if (!state.installs || force) {
+    const data = await api.installs();
+    state.installs = data.installs || [];
+    state.history = data.history || [];
+  }
+  return state.installs;
+}
+
+function platformFor(slug) {
+  return (state.platforms || []).find((p) => (p.fs_slug || p.slug) === slug || p.slug === slug);
+}
+
+function pseudoRomFromInstall(entry) {
+  return {
+    id: entry.rom_id,
+    name: entry.name,
+    platform_name: platformFor(entry.platform)?.display_name || entry.platform || "",
+    platform_fs_slug: entry.platform,
+    size: entry.size,
+    cover: entry.cover,
+    installed: entry,
+  };
+}
+
+function mount(el, ...children) {
+  el.replaceChildren(...children.flat(Infinity).filter((child) => child !== null && child !== undefined && child !== false));
+}
+
+// -------------------------------------------------------------- library ---
+async function renderLibrary(token) {
+  viewEl.replaceChildren(h("div", { class: "grid" }, Array.from({ length: 10 }, () => h("div", { class: "skel card" }))));
+  const [platforms, installs, recent] = await Promise.all([
+    getPlatforms(),
+    getInstalls(),
+    api.roms({ limit: 18, sort: "newest" }),
+  ]);
+  if (token !== state.renderToken) return;
+  const roms = recent.items || [];
+  const withGames = platforms.filter((p) => Number(p.rom_count) > 0);
+  const featured = roms.find((r) => r.installed) || roms[0] || installs[0];
+
+  const frag = document.createDocumentFragment();
+  frag.append(heroBlock(featured, installs.length));
+  frag.append(platformRail(withGames, ""));
+  if (roms.length) frag.append(rail("Recently added", `${recent.total} in library`, roms.map((r) => gameCard(r))));
+  if (installs.length) {
+    frag.append(rail("Ready to play", `${installs.length} local`, installs.slice(0, 12).map((entry) => gameCard(pseudoRomFromInstall(entry)))));
+  }
+  if (!roms.length && !installs.length) {
+    frag.append(emptyState({
+      glyph: "cart",
+      title: "This library is empty",
+      body: "RomM has no games on this server yet, or the account cannot see any. Add games to RomM and refresh.",
+      action: h("button", { class: "btn", onClick: () => reloadLibrary() }, icon("refresh"), "Refresh"),
+    }));
+  }
+  viewEl.replaceChildren(frag);
+}
+
+function heroBlock(rom, localCount) {
+  if (!rom) {
+    return h("section", { class: "hero" },
+      h("div", { class: "hero-empty" },
+        h("p", { class: "eyebrow", style: { justifyContent: "center" } }, "No games yet"),
+        h("h1", { class: "page-title" }, "Your arcade is waiting"),
+        h("p", { class: "page-sub" }, "Connect RomMArcade to a RomM server with games in it, then install one and play it through EmuDeck."),
+        h("div", { class: "row", style: { justifyContent: "center" } },
+          h("a", { class: "btn primary", href: "#/settings/server" }, icon("server"), "Server settings"),
+        ),
+      ),
+    );
+  }
+  const installed = Boolean(rom.installed);
+  return h("section", { class: "hero" },
+    h("div", { class: "hero-art" },
+      rom.cover ? h("img", { src: `/api/cover/${rom.id}?size=large`, alt: "", loading: "eager" }) : null,
+    ),
+    h("div", { class: "hero-body" },
+      h("div", { class: "hero-kicker" }, h("span", { class: "pulse" }), installed ? "Ready on this machine" : "Fresh from the library"),
+      h("h1", { class: "hero-title" }, rom.name),
+      h("div", { class: "hero-meta" },
+        h("span", null, rom.platform_name || rom.platform_fs_slug || "RomM"),
+        rom.size ? h("span", null, fmtBytes(rom.size)) : null,
+        localCount ? h("span", null, h("b", null, String(localCount)), " installed locally") : null,
+      ),
+      h("div", { class: "hero-actions" },
+        installed
+          ? h("button", { class: "btn primary", onClick: () => playRom(rom.id) }, icon("play"), "Play now")
+          : h("button", { class: "btn primary", onClick: () => installRom(rom.id, { play: true }) }, icon("download"), "Install & play"),
+        h("a", { class: "btn ghost", href: `#/game/${rom.id}` }, "Details", icon("arrow")),
+      ),
+    ),
+  );
+}
+
+function platformRail(platforms, activeSlug) {
+  if (!platforms.length) return document.createDocumentFragment();
+  return h("section", { class: "rail" },
+    h("div", { class: "rail-head" },
+      h("h2", null, "Platforms"),
+      h("span", { class: "count" }, `${platforms.length}`),
+      h("button", { class: "btn small ghost more", onClick: () => setRoute("settings", "emulators") }, icon("settings"), "Emulator map"),
+    ),
+    h("div", { class: "rail-track" }, platforms.map((p) => platformCard(p, (p.fs_slug || p.slug) === activeSlug))),
+  );
+}
+
+function rail(title, subtitle, cards, extra = null) {
+  return h("section", { class: "rail" },
+    h("div", { class: "rail-head" },
+      h("h2", null, title),
+      subtitle ? h("span", { class: "count" }, subtitle) : null,
+      extra ? h("div", { class: "more" }, extra) : null,
+    ),
+    h("div", { class: "grid" }, cards),
+  );
+}
+
+async function reloadLibrary() {
+  state.platforms = null;
+  state.installs = null;
+  await route();
+}
+
+// ------------------------------------------------------------- platform ---
+async function renderPlatform(slug, token) {
+  const platforms = await getPlatforms();
+  const platform = platforms.find((p) => (p.fs_slug || p.slug) === slug || p.slug === slug);
+  if (!platform) {
+    throw new Error(`No platform called ${slug} in this library.`);
+  }
+  const sort = state.sort[slug] || "name";
+  const data = await api.roms({ platform: platform.fs_slug || platform.slug, limit: 150, sort });
+  if (token !== state.renderToken) return;
+
+  const local = platform.local || {};
+  const mapped = Boolean(local.exists && local.launcher);
+  const head = h("div", { class: "page-head" },
+    h("div", { class: "grow" },
+      h("p", { class: "eyebrow" }, "Platform"),
+      h("h1", { class: "page-title" }, platform.display_name || platform.name || slug),
+      h("p", { class: "page-sub" },
+        `${platform.rom_count} game${platform.rom_count === 1 ? "" : "s"} on the server`,
+        local.installed_count ? ` · ${local.installed_count} installed here` : "",
+        mapped ? ` · ${local.launcher_name}${local.core ? " / " + local.core : ""}` : "",
+      ),
+    ),
+    h("div", { class: "page-actions" },
+      Number(platform.firmware_count) > 0
+        ? h("button", { class: "btn", onClick: (event) => downloadBios(platform.id, event.currentTarget) }, icon("download"), "Download BIOS")
+        : null,
+      h("select", {
+        class: "select",
+        style: { width: "160px" },
+        "aria-label": "Sort games",
+        onChange: (event) => { state.sort[slug] = event.target.value; renderPlatform(slug, ++state.renderToken); },
+      },
+        ["name", "newest", "size"].map((value) => h("option", { value, selected: value === sort }, { name: "Name A–Z", newest: "Newest first", size: "Largest first" }[value])),
+      ),
+    ),
+  );
+
+  const body = [head];
+  if (!local.exists) {
+    body.push(banner({
+      tone: "warn",
+      title: "No EmuDeck folder for this platform",
+      text: `RomMArcade could not match ${platform.fs_slug} to a folder under ${state.status?.emudeck?.root || "EmuDeck"}. Games can be browsed, but installs need a folder.`,
+      action: h("a", { class: "btn small", href: "#/settings/emulators" }, "Set the mapping"),
+    }));
+  } else if (!local.launcher) {
+    body.push(banner({
+      tone: "warn",
+      title: "No launcher for this platform",
+      text: "The EmuDeck folder exists, but no installed emulator launcher maps to this system. Install an emulator in EmuDeck or pick a launcher in Settings.",
+      action: h("a", { class: "btn small", href: "#/settings/emulators" }, "Pick a launcher"),
+    }));
+  }
+  body.push(data.items?.length
+    ? h("div", { class: "grid" }, data.items.map((rom) => gameCard(rom)))
+    : emptyState({ glyph: "cart", title: "No games here yet", body: "This platform exists in RomM but has no visible games on this server." }));
+  if (data.total > (data.items?.length || 0)) {
+    body.push(h("div", { class: "row", style: { justifyContent: "center", marginTop: "26px" } },
+      h("button", { class: "btn", onClick: (event) => loadMorePlatform(platform, data, event.currentTarget) }, "Load more", icon("arrow")),
+    ));
+  }
+  viewEl.replaceChildren(...body);
+}
+
+async function loadMorePlatform(platform, data, button) {
+  button.disabled = true;
+  try {
+    const more = await api.roms({ platform: platform.fs_slug || platform.slug, limit: 150, offset: data.items.length, sort: state.sort[platform.fs_slug] || "name" });
+    const grid = viewEl.querySelector(".grid");
+    (more.items || []).forEach((rom) => grid.append(gameCard(rom)));
+    data.items.push(...(more.items || []));
+    if (data.items.length >= data.total) button.parentElement.remove();
+  } catch (error) { toast(error.message, "bad"); }
+  finally { button.disabled = false; }
+}
+
+function banner({ tone = "warn", title, text, action }) {
+  return h("div", { class: `bios-banner ${tone === "warn" ? "" : tone}` },
+    icon("alert"),
+    h("div", { class: "txt" }, h("b", null, title), h("div", null, text)),
+    action || null,
+  );
+}
+
+// ----------------------------------------------------------------- game ---
+async function renderGame(id, token) {
+  viewEl.replaceChildren(h("div", { class: "skel card", style: { height: "360px" } }));
+  const [detail, installs, platforms] = await Promise.all([api.rom(id), getInstalls(), getPlatforms()]);
+  if (token !== state.renderToken) return;
+  const rom = detail.rom;
+  const platform = platforms.find((p) => p.id === rom.platform_id);
+  const installed = rom.installed;
+  const mapping = rom.mapping || {};
+  let firmware = [];
+  if (platform && Number(platform.firmware_count) > 0) {
+    try { firmware = (await api.firmware(platform.id)).firmware || []; } catch { firmware = []; }
+  }
+  if (token !== state.renderToken) return;
+  const missingBios = firmware.filter((f) => !f.installed);
+
+  const art = h("div", { class: "art" }, rom.cover
+    ? h("img", { src: `/api/cover/${rom.id}?size=large`, alt: "", loading: "eager" })
+    : null);
+  if (!rom.cover) art.append(h("div", { class: "cover-fallback" }, icon("cart"), h("div", { class: "name" }, rom.name)));
+
+  const actions = [];
+  if (installed) {
+    actions.push(h("button", { class: "btn primary", onClick: () => playRom(rom.id) }, icon("play"), "Play"));
+    actions.push(h("span", { class: "chip ok" }, icon("check"), "Installed"));
+  } else if (mapping.exists && mapping.launcher) {
+    actions.push(h("button", { class: "btn primary", onClick: () => installRom(rom.id, { play: true }) }, icon("download"), "Install & play"));
+    actions.push(h("button", { class: "btn", onClick: () => installRom(rom.id) }, "Install only"));
+  } else {
+    actions.push(h("a", { class: "btn", href: "#/settings/emulators" }, icon("settings"), "Map this platform"));
+  }
+  actions.push(h("a", { class: "btn ghost", href: `#/platform/${encodeURIComponent(rom.platform_fs_slug || "")}` }, "Back to platform"));
+
+  const facts = h("div", { class: "facts" },
+    fact("Platform", rom.platform_name || rom.platform_fs_slug),
+    fact("Size", rom.size ? fmtBytes(rom.size) : "Unknown"),
+    fact("EmuDeck folder", mapping.dir || "Unmapped", mapping.exists ? "" : "bad"),
+    fact("Launcher", mapping.launcher_name || mapping.launcher || "Not set", mapping.launcher ? "" : "bad"),
+    fact("Core", mapping.core || (mapping.launcher === "retroarch" ? "Auto" : "—")),
+    fact("File", rom.target_name || rom.file_name || "—", "", true),
+    fact("Install path", rom.target || "—", "", true, true),
+    fact("Files", String((rom.files || []).length)),
+  );
+
+  const body = h("div", { class: "game-hero" },
+    art,
+    h("div", null,
+      h("p", { class: "eyebrow" }, rom.platform_name || "Game"),
+      h("h1", { class: "game-title" }, rom.name),
+      h("div", { class: "game-meta" },
+        rom.size ? h("span", { class: "chip" }, fmtBytes(rom.size)) : null,
+        rom.has_multiple_files ? h("span", { class: "chip" }, "Multi-file") : null,
+        installed ? h("span", { class: "chip ok" }, icon("check"), "On this machine") : h("span", { class: "chip" }, "Cloud"),
+        rom.release_year ? h("span", { class: "chip" }, String(rom.release_year)) : null,
+        rom.players ? h("span", { class: "chip" }, rom.players) : null,
+      ),
+      h("div", { class: "game-actions" }, actions),
+      missingBios.length
+        ? h("div", { class: "bios-banner" },
+            icon("alert"),
+            h("div", { class: "txt" }, h("b", null, `${missingBios.length} BIOS file${missingBios.length === 1 ? "" : "s"} missing`),
+              h("div", null, `${rom.platform_name || "This platform"} needs firmware in EmuDeck's BIOS folder before some games will boot.`)),
+            h("button", { class: "btn small", onClick: (event) => downloadBios(platform.id, event.currentTarget) }, icon("download"), "Download BIOS"),
+          )
+        : null,
+      rom.summary ? h("p", { class: "game-summary" }, rom.summary) : null,
+      facts,
+      (rom.files || []).length
+        ? [h("div", { class: "section-title" }, "Files"),
+           h("div", { class: "file-list" }, rom.files.map((file) => h("div", { class: "file-row" },
+             icon("folder"), h("span", { class: "n" }, file.file_name || "file"), h("span", null, file.size ? fmtBytes(file.size) : ""))))]
+        : null,
+    ),
+  );
+  mount(viewEl, body);
+  if (state.autoPlay && Number(state.autoPlay.romId) === Number(rom.id)) {
+    const request = state.autoPlay;
+    state.autoPlay = null;
+    if (request.play) {
+      if (installed) playRom(rom.id);
+      else if (mapping.exists && mapping.launcher) installRom(rom.id, { play: true });
+    }
+  }
+}
+
+function fact(key, value, tone = "", mono = false, wide = false) {
+  return h("div", { class: `fact ${wide ? "wide" : ""}` },
+    h("div", { class: "k" }, key),
+    h("div", { class: `v ${mono ? "mono" : ""} ${tone}` }, value || "—"),
+  );
+}
+
+// ------------------------------------------------------------ installed ---
+async function renderInstalled(token) {
+  const [installs, history] = await Promise.all([
+    getInstalls(true),
+    api.history().then((data) => data.history || []).catch(() => []),
+  ]);
+  if (token !== state.renderToken) return;
+  const head = h("div", { class: "page-head" },
+    h("div", { class: "grow" },
+      h("p", { class: "eyebrow" }, "On this machine"),
+      h("h1", { class: "page-title" }, "Installed"),
+      h("p", { class: "page-sub" }, installs.length
+        ? `${installs.length} game${installs.length === 1 ? "" : "s"} ready in EmuDeck folders`
+        : "Nothing installed by RomMArcade yet"),
+    ),
+    h("div", { class: "page-actions" },
+      h("button", { class: "btn", onClick: repairInstalls }, icon("refresh"), "Check files"),
+    ),
+  );
+  const body = [head];
+  if (installs.length) {
+    body.push(h("div", { class: "grid" }, installs.map((entry) => gameCard(pseudoRomFromInstall(entry)))));
+  } else {
+    body.push(emptyState({
+      glyph: "download",
+      title: "No installs yet",
+      body: "Open any game and press Install. RomMArcade puts it in the right EmuDeck folder and remembers it here.",
+      action: h("a", { class: "btn primary", href: "#/library" }, "Browse the library"),
+    }));
+  }
+  if (history.length) {
+    body.push(h("div", { class: "section-title" }, "Recently played"));
+    body.push(h("div", { class: "file-list" }, history.slice(0, 12).map((entry) => h("div", { class: "file-row" },
+      icon("clock"),
+      h("span", { class: "n" }, entry.name),
+      h("span", null, entry.platform || ""),
+      h("span", null, timeAgo(entry.played_at)),
+    ))));
+  }
+  viewEl.replaceChildren(...body);
+}
+
+async function repairInstalls() {
+  try {
+    const result = await api.repairInstalls();
+    state.installs = result.installs;
+    toast(result.removed ? `Removed ${result.removed} missing install${result.removed === 1 ? "" : "s"}` : "Every install still exists on disk", "good");
+    renderInstalled(++state.renderToken);
+  } catch (error) { toast(error.message, "bad"); }
+}
+
+// --------------------------------------------------------------- search ---
+async function renderSearch(query, token) {
+  const q = (query || "").trim();
+  if (!q) { location.hash = "#/library"; return; }
+  const data = await api.roms({ search: q, limit: 150, sort: "name" });
+  if (token !== state.renderToken) return;
+  const head = h("div", { class: "page-head" },
+    h("div", { class: "grow" },
+      h("p", { class: "eyebrow" }, "Search"),
+      h("h1", { class: "page-title" }, `“${q}”`),
+      h("p", { class: "page-sub" }, `${data.total} match${data.total === 1 ? "" : "es"} in this RomM library`),
+    ),
+  );
+  viewEl.replaceChildren(head, data.items?.length
+    ? h("div", { class: "grid" }, data.items.map((rom) => gameCard(rom)))
+    : emptyState({ glyph: "search", title: "Nothing matched", body: "Try a shorter title, or search for the platform name." }));
+}
+
+async function onSearch(event) {
+  const value = event.target.value.trim();
+  const current = parseRoute();
+  if (!value) {
+    if (current.name === "search") location.hash = "#/library";
+    return;
+  }
+  if (current.name === "search" && current.args.join("/") === value) return;
+  setRoute("search", value);
+}
+
+// -------------------------------------------------------------- actions ---
+async function installRom(romId, { play = false } = {}) {
+  try {
+    const result = await api.install(romId);
+    if (result.download?.already) {
+      toast(`${result.download.name} is already installed`, "good");
+      if (play) playRom(romId);
+      return;
+    }
+    state.pendingPlay.set(Number(romId), play);
+    toast(`Installing ${result.download?.name || "game"}`, "info");
+    state.trayHidden = 0;
+    await route();
+    await pollDownloads();
+  } catch (error) {
+    toast(error.message, "bad");
+  }
+}
+
+async function playRom(romId) {
+  try {
+    const result = await api.play(romId);
+    toast(`Launching ${result.launcher || "the emulator"}${result.core ? " (" + result.core + ")" : ""}`, "good");
+  } catch (error) {
+    if (error.payload?.needs_install) {
+      openModal(h("div", { class: "sheet" },
+        h("h2", null, "Not installed yet"),
+        h("p", null, error.message),
+        h("div", { class: "row end" },
+          h("button", { class: "btn ghost", onClick: closeModal }, "Cancel"),
+          h("button", { class: "btn primary", onClick: () => { closeModal(); installRom(romId, { play: true }); } }, icon("download"), "Install & play"),
+        ),
+      ));
+    } else {
+      toast(error.message, "bad");
+    }
+  }
+}
+
+async function downloadBios(platformId, button) {
+  if (button) button.disabled = true;
+  try {
+    const result = await api.bios(platformId);
+    if (!result.downloads?.length) toast(`BIOS already present (${result.skipped} file${result.skipped === 1 ? "" : "s"})`, "good");
+    else {
+      toast(`Downloading ${result.downloads.length} BIOS file${result.downloads.length === 1 ? "" : "s"}`, "info");
+      state.trayHidden = 0;
+      await pollDownloads();
+    }
+  } catch (error) { toast(error.message, "bad"); }
+  finally { if (button) button.disabled = false; }
+}
+
+function onDocumentClick(event) {
+  const stop = event.target.closest("[data-stop]");
+  if (stop) event.stopPropagation();
+  const serverPill = event.target.closest('[data-action="server-status"]');
+  if (serverPill) showServerStatus();
+  const action = event.target.closest("[data-action]");
+  if (action) {
+    const name = action.dataset.action;
+    if (name === "install" && action.dataset.rom) installRom(Number(action.dataset.rom), { play: action.dataset.play === "1" });
+    if (name === "play" && action.dataset.rom) playRom(Number(action.dataset.rom));
+    if (name === "refresh") { action.classList.add("spin"); reloadLibrary().finally(() => action.classList.remove("spin")); }
+  }
+}
+
+async function showServerStatus() {
+  let status = state.status?.server || {};
+  try { status = (await api.config()).status || status; } catch { /* keep cached */ }
+  const rows = [
+    ["Server", status.url || "Not configured"],
+    ["State", status.reachable ? "Reachable" : (status.error || "Unreachable")],
+    ["Version", status.version || "—"],
+    ["User", status.user ? `${status.user.username} (${status.user.role})` : "—"],
+    ["Library", status.platforms != null ? `${status.platforms} platforms` : "—"],
+  ];
+  openModal(h("div", { class: "sheet" },
+    h("h2", null, "Server status"),
+    h("div", { class: "file-list", style: { margin: "16px 0 20px" } }, rows.map(([k, v]) => h("div", { class: "file-row" },
+      h("span", { style: { width: "88px", color: "var(--muted-2)" } }, k),
+      h("span", { class: "n" }, String(v)),
+    ))),
+    h("div", { class: "row end" },
+      h("a", { class: "btn ghost", href: "#/settings/server", onClick: closeModal }, icon("settings"), "Server settings"),
+      h("button", { class: "btn primary", onClick: closeModal }, "Done"),
+    ),
+  ));
+}
+
+function onKey(event) {
+  const tag = (event.target?.tagName || "").toLowerCase();
+  const typing = tag === "input" || tag === "textarea" || tag === "select" || event.target?.isContentEditable;
+  if (event.key === "/" && !typing) {
+    event.preventDefault();
+    searchEl.focus();
+    searchEl.select();
+  }
+  if (event.key === "Escape" && document.activeElement === searchEl) {
+    searchEl.value = "";
+    searchEl.blur();
+    if (parseRoute().name === "search") location.hash = "#/library";
+  }
+}
+
+// ------------------------------------------------------------ downloads ---
+async function pollDownloads() {
+  try {
+    const data = await api.downloads();
+    state.downloads = data.downloads || [];
+  } catch { return; }
+  for (const job of state.downloads) {
+    if (job.status === "done" && !state.seenDone.has(job.id)) {
+      state.seenDone.add(job.id);
+      if (job.kind === "rom") {
+        toast(`${job.name} installed`, "good");
+        state.installs = null;
+        state.platforms = null;
+        const wantsPlay = state.pendingPlay.get(Number(job.rom_id));
+        state.pendingPlay.delete(Number(job.rom_id));
+        if (wantsPlay) playRom(job.rom_id);
+        else if (parseRoute().name !== "settings") route();
+      } else if (job.kind === "bios") {
+        toast(`BIOS ${job.name} saved`, "good");
+      }
+    }
+    if (job.status === "error" && !state.seenErrors.has(job.id)) {
+      state.seenErrors.add(job.id);
+      toast(`${job.name}: ${job.error || "download failed"}`, "bad");
+      state.pendingPlay.delete(Number(job.rom_id));
+    }
+  }
+  renderTray();
+}
+
+function renderTray() {
+  const jobs = state.downloads.filter((job) => ["queued", "downloading", "extracting", "error"].includes(job.status)
+    || (job.status === "done" && Date.now() - (job.finished_at || 0) * 1000 < 20000));
+  if (!jobs.length || Date.now() < state.trayHidden) {
+    trayEl.hidden = true;
+    return;
+  }
+  trayEl.hidden = false;
+  const active = jobs.filter((job) => ["queued", "downloading", "extracting"].includes(job.status)).length;
+  trayEl.replaceChildren(
+    h("div", { class: "tray-head" },
+      icon("download"),
+      h("span", null, active ? "Downloading" : "Downloads"),
+      h("span", { class: "count" }, String(jobs.length)),
+      h("button", {
+        class: "icon-btn small",
+        title: "Hide until the next download",
+        "aria-label": "Hide downloads",
+        onClick: () => { state.trayHidden = Date.now() + 60000; renderTray(); },
+      }, icon("close")),
+    ),
+    h("div", { class: "jobs" }, jobs.map((job) => {
+      const pct = job.status === "done" ? 100 : Math.round((job.progress || 0) * 100);
+      const note = job.status === "error" ? job.error
+        : job.status === "extracting" ? "Extracting archive"
+        : job.status === "queued" ? "Queued"
+        : job.status === "done" ? "Installed"
+        : `${fmtBytes(job.received)} of ${job.total ? fmtBytes(job.total) : "?"}${job.speed ? " · " + fmtSpeed(job.speed) : ""}`;
+      return h("div", { class: `job ${job.status}` },
+        h("div", { class: "job-top" },
+          h("span", { class: "job-name" }, job.name),
+          h("span", { class: "job-pct" }, job.status === "extracting" ? "ZIP" : `${pct}%`),
+          ["queued", "downloading", "extracting"].includes(job.status)
+            ? h("button", { class: "x", title: "Cancel", "aria-label": "Cancel download", onClick: () => cancelJob(job.id) }, icon("close", "icon"))
+            : null,
+        ),
+        h("div", { class: "bar" }, h("i", { style: { width: `${pct}%` } })),
+        h("div", { class: "note" }, note),
+      );
+    })),
+  );
+}
+
+async function cancelJob(id) {
+  try {
+    await api.cancelDownload(id);
+    await pollDownloads();
+  } catch (error) { toast(error.message, "bad"); }
+}
+
+async function pollDeeplink() {
+  if (!state.status?.configured) return;
+  try {
+    const { target } = await api.deeplink();
+    if (!target) return;
+    handleDeepLink(target);
+  } catch { /* service busy */ }
+}
+
+function handleDeepLink(target) {
+  const label = target.name ? `“${target.name}”` : `ROM ${target.rom}`;
+  toast(`RomMArcade opening ${label}`, "info", 2600);
+  if (target.server) {
+    state.platforms = null;
+    state.installs = null;
+  }
+  state.autoPlay = { romId: target.rom, play: Boolean(target.play) };
+  setRoute("game", String(target.rom));
+}
+
+// --------------------------------------------------------------- setup ----
+function setupState() {
+  if (!state.setup) {
+    state.setup = {
+      step: 1,
+      url: state.config?.servers?.[0]?.url || "",
+      authMode: "pair",
+      token: "",
+      username: "",
+      password: "",
+      probe: null,
+      pair: null,
+      pairing: false,
+      error: "",
+      emudeckOn: true,
+      busy: false,
+    };
+  }
+  return state.setup;
+}
+
+async function renderSetup() {
+  const setup = setupState();
+  const steps = h("div", { class: "steps" },
+    [1, 2, 3].map((n) => h("span", { class: `step-dot ${setup.step > n ? "done" : setup.step === n ? "now" : ""}` })),
+  );
+  const card = h("div", { class: "setup-card" });
+  if (setup.step === 1) setupServerStep(card, setup);
+  else if (setup.step === 2) await setupAuthStep(card, setup);
+  else await setupEmudeckStep(card, setup);
+  viewEl.replaceChildren(
+    h("div", { class: "setup" },
+      h("div", { class: "setup-brand" },
+        h("div", { class: "mark" }, h("span", null, "RomM"), h("span", null, "Arcade")),
+        h("p", null, "Point it at a RomM server, pair this machine, and let EmuDeck do the playing."),
+      ),
+      steps,
+      card,
+    ),
+  );
+}
+
+function setupServerStep(card, setup) {
+  const input = h("input", {
+    class: "input",
+    type: "url",
+    placeholder: "http://192.168.86.30:7676",
+    value: setup.url,
+    autocomplete: "url",
+    spellcheck: "false",
+    onInput: (event) => { setup.url = event.target.value; },
+    onKeydown: (event) => { if (event.key === "Enter") testSetupServer(setup, card); },
+  });
+  setTimeout(() => input.focus(), 30);
+  mount(card, 
+    h("h2", null, "Where is your RomM server?"),
+    h("p", { class: "lead" }, "RomMArcade talks to RomM (or its ROMulus fork) over its HTTP API. Use the address you open in a browser, including the port, and any sub-path."),
+    h("div", { class: "field" }, h("label", { for: "setupUrl" }, "Server URL"), input),
+    setup.error ? h("p", { class: "hint bad", style: { marginTop: "10px" } }, setup.error) : null,
+    setup.probe ? h("p", { class: "hint good", style: { marginTop: "10px" } },
+      `RomM ${setup.probe.version || ""} answered${setup.probe.user ? " as " + setup.probe.user.username : ""}.`) : null,
+    h("div", { class: "setup-actions" },
+      h("button", { class: "btn primary", disabled: setup.busy, onClick: () => testSetupServer(setup, card) },
+        setup.busy ? h("span", { class: "spinner" }) : icon("arrow"), "Continue"),
+    ),
+  );
+  input.id = "setupUrl";
+}
+
+async function testSetupServer(setup, card) {
+  setup.error = "";
+  setup.probe = null;
+  setup.busy = true;
+  setupServerStep(card, setup);
+  try {
+    const auth = setup.authMode === "token" ? { mode: "token", token: setup.token }
+      : setup.authMode === "password" ? { mode: "password", username: setup.username, password: setup.password }
+      : { mode: "none" };
+    const result = await api.testServer({ url: setup.url, auth });
+    setup.probe = result.server;
+    setup.url = result.server.url;
+    setup.step = 2;
+  } catch (error) {
+    setup.error = error.message;
+  } finally {
+    setup.busy = false;
+    renderSetup();
+  }
+}
+
+async function setupAuthStep(card, setup) {
+  const choice = (mode, title, subtitle) => h("div", {
+    class: `auth-option ${setup.authMode === mode ? "active" : ""}`,
+    onClick: () => { setup.authMode = mode; setup.pair = null; setup.pairing = false; renderSetup(); },
+  }, h("span", { class: "radio" }), h("div", null, h("div", { class: "t" }, title), h("div", { class: "s" }, subtitle)));
+
+  const widgets = [];
+  if (setup.authMode === "pair") {
+    if (setup.pair) {
+      widgets.push(h("div", { class: "pair-box" },
+        h("div", { class: "hint", style: { textAlign: "center" } }, "Enter this code in RomM to approve RomMArcade"),
+        h("div", { class: "pair-code" }, setup.pair.user_code),
+        h("a", { class: "pair-url", href: setup.pair.verification_url, target: "_blank", rel: "noreferrer" }, setup.pair.verification_url),
+        h("div", { class: "pair-wait" }, setup.pairing ? h("span", { class: "spinner" }) : null,
+          setup.pairing ? "Waiting for approval…" : (setup.error || "Approval needed")),
+      ));
+    } else {
+      widgets.push(h("p", { class: "hint", style: { marginBottom: "12px" } },
+        "RomM shows a short code; approve it there and this machine receives its own token. No password is stored."));
+    }
+  } else if (setup.authMode === "token") {
+    widgets.push(h("div", { class: "field" },
+      h("label", { for: "setupToken" }, "Client token"),
+      h("input", {
+        class: "input", id: "setupToken", type: "password", placeholder: "rmm_…", autocomplete: "off",
+        onInput: (event) => { setup.token = event.target.value; },
+      }),
+      h("div", { class: "hint" }, "Create one in RomM under Settings, Client tokens. RomMArcade asks for roms.read, platforms.read, assets.read, firmware.read and devices."),
+    ));
+  } else if (setup.authMode === "password") {
+    widgets.push(h("div", { class: "form-grid" },
+      h("div", { class: "field" }, h("label", { for: "setupUser" }, "Username"),
+        h("input", { class: "input", id: "setupUser", autocomplete: "username", value: setup.username, onInput: (event) => { setup.username = event.target.value; } })),
+      h("div", { class: "field" }, h("label", { for: "setupPass" }, "Password"),
+        h("input", { class: "input", id: "setupPass", type: "password", autocomplete: "current-password", onInput: (event) => { setup.password = event.target.value; } })),
+    ));
+    widgets.push(h("p", { class: "hint", style: { marginTop: "10px" } }, "Stored in RomMArcade's config file (mode 600) and sent as HTTP Basic to RomM."));
+  }
+
+  const canContinue = !setup.pairing;
+  mount(card, 
+    h("h2", null, "How should this machine sign in?"),
+    h("p", { class: "lead" }, "Pairing is the cleanest: RomM issues a token for RomMArcade alone and you can revoke it later."),
+    h("div", { class: "auth-choice" },
+      choice("pair", "Pair this device", "Approve a short code in RomM's browser UI"),
+      choice("token", "Paste a client token", "Already have an rmm_ token?"),
+      choice("password", "Use username and password", "HTTP Basic, stored locally"),
+    ),
+    ...widgets,
+    setup.error ? h("p", { class: "hint bad" }, setup.error) : null,
+    h("div", { class: "row", style: { marginTop: "6px" } },
+      h("button", { class: "btn ghost small", onClick: () => { setup.step = 1; setup.error = ""; renderSetup(); } }, "Back"),
+      h("div", { class: "spacer" }),
+      setup.authMode === "pair" && !setup.pair
+        ? h("button", { class: "btn primary", disabled: setup.busy, onClick: () => startPairing(setup) }, icon("server"), "Start pairing")
+        : canContinue
+          ? h("button", { class: "btn primary", disabled: setup.busy, onClick: () => finishAuth(setup) }, icon("arrow"), "Continue")
+          : null,
+    ),
+  );
+  if (setup.pairing) schedulePairPoll(setup);
+}
+
+async function startPairing(setup) {
+  setup.busy = true;
+  setup.error = "";
+  try {
+    setup.pair = await api.pairStart({ url: setup.url });
+    setup.pairing = true;
+    setup.pollStart = Date.now();
+  } catch (error) {
+    setup.error = error.message;
+  } finally {
+    setup.busy = false;
+    renderSetup();
+  }
+}
+
+let pairTimer = null;
+function schedulePairPoll(setup) {
+  clearTimeout(pairTimer);
+  if (!setup.pairing || !setup.pair) return;
+  const interval = Math.max(3, Number(setup.pair.interval) || 5) * 1000;
+  if (Date.now() - setup.pollStart > (Number(setup.pair.expires_in) || 600) * 1000) {
+    setup.pairing = false;
+    setup.error = "The code expired. Start pairing again.";
+    renderSetup();
+    return;
+  }
+  pairTimer = setTimeout(async () => {
+    try {
+      const result = await api.pairPoll({ device_code: setup.pair.device_code });
+      if (result.status === "approved") {
+        setup.pairing = false;
+        setup.pair = null;
+        state.config = (await api.config()).config;
+        state.status = await api.status();
+        paintServerPill();
+        toast(`Paired as ${result.user?.username || "a RomM user"}`, "good");
+        setup.step = 3;
+        renderSetup();
+        return;
+      }
+      if (result.status === "denied" || result.status === "expired") {
+        setup.pairing = false;
+        setup.error = result.status === "denied" ? "The request was denied in RomM." : "The code expired. Start again.";
+        renderSetup();
+        return;
+      }
+    } catch (error) {
+      setup.error = error.message;
+    }
+    schedulePairPoll(setup);
+  }, interval);
+}
+
+async function finishAuth(setup) {
+  setup.busy = true;
+  setup.error = "";
+  try {
+    const auth = setup.authMode === "token"
+      ? { mode: "token", token: setup.token }
+      : { mode: "password", username: setup.username, password: setup.password };
+    if (setup.authMode !== "pair") {
+      const probe = await api.testServer({ url: setup.url, auth });
+      setup.probe = probe.server;
+    }
+    const result = await api.saveConfig({ server: { url: setup.url, auth } });
+    state.config = result.config;
+    state.status = await api.status();
+    paintServerPill();
+    setup.step = 3;
+  } catch (error) {
+    setup.error = error.message;
+  } finally {
+    setup.busy = false;
+    renderSetup();
+  }
+}
+
+async function setupEmudeckStep(card, setup) {
+  let emu = null;
+  try { emu = await api.emudeck(); state.emudeck = emu; } catch { /* optional */ }
+  const platforms = emu?.platforms?.filter((p) => p.dir)?.length || 0;
+  mount(card, 
+    h("h2", null, "Give it a place to play"),
+    h("p", { class: "lead" }, "RomMArcade uses the EmuDeck you already have. It installs games into EmuDeck's ROM folders and starts EmuDeck's own launchers, so saves and BIOS stay where EmuDeck expects them."),
+    emu?.detected
+      ? h("div", { class: "emu-status" },
+          h("div", { class: "glyph" }, icon("folder")),
+          h("div", { class: "txt" },
+            h("div", { class: "t" }, "EmuDeck found"),
+            h("div", { class: "s" }, emu.root),
+            h("div", { class: "s" }, `${emu.launchers.filter((l) => l.ready).length} launchers · ${platforms} platforms mapped · ${emu.cores.length} RetroArch cores`),
+          ),
+          h("span", { class: "badge local" }, "Ready"),
+        )
+      : h("div", { class: "emu-status" },
+          h("div", { class: "glyph" }, icon("alert")),
+          h("div", { class: "txt" },
+            h("div", { class: "t" }, "No EmuDeck found here"),
+            h("div", { class: "s" }, "RomMArcade will browse the library, but installs and launches need EmuDeck. You can point it at a folder later in Emulators."),
+          ),
+        ),
+    h("label", { class: "switch", style: { marginTop: "6px" } },
+      h("input", {
+        type: "checkbox",
+        checked: emu?.detected ? "" : null,
+        onChange: (event) => { setup.emudeckOn = event.target.checked; },
+      }),
+      "Use EmuDeck folders and launchers",
+    ),
+    setup.error ? h("p", { class: "hint bad", style: { marginTop: "10px" } }, setup.error) : null,
+    h("div", { class: "setup-actions" },
+      h("a", { class: "btn ghost", href: "#/library", onClick: () => finishSetup(setup, false) }, "Skip for now"),
+      h("button", { class: "btn primary", onClick: () => finishSetup(setup, true) }, icon("play"), "Enter the arcade"),
+    ),
+  );
+}
+
+async function finishSetup(setup, save) {
+  if (save) {
+    try { await api.saveConfig({ emudeck: { enabled: Boolean(setup.emudeckOn) } }); } catch { /* keep going */ }
+  }
+  state.setup = null;
+  state.status = await api.status();
+  state.platforms = null;
+  state.installs = null;
+  if (!state.status.configured) {
+    toast("No server is configured yet", "bad");
+    return;
+  }
+  location.hash = "#/library";
+  await route();
+}
+
+// ------------------------------------------------------------- settings ---
+async function renderSettings(tab, token) {
+  const def = ["server", "emulators", "about"].includes(tab) ? tab : "server";
+  const tabs = h("nav", { class: "tabs", "aria-label": "Settings" },
+    [["server", "Server", "server"], ["emulators", "Emulators", "cart"], ["about", "About", "grid"]].map(([key, label, glyph]) =>
+      h("a", { class: `tab ${def === key ? "active" : ""}`, href: `#/settings/${key}` }, icon(glyph), label)),
+  );
+  const body = h("div", { class: "settings-body" });
+  viewEl.replaceChildren(
+    h("div", { class: "page-head" },
+      h("div", { class: "grow" },
+        h("p", { class: "eyebrow" }, "Setup"),
+        h("h1", { class: "page-title" }, "Settings"),
+        h("p", { class: "page-sub" }, "Server, EmuDeck and how RomMArcade behaves on this machine."),
+      ),
+    ),
+    h("div", { class: "settings-grid" }, tabs, body),
+  );
+  if (def === "server") await settingsServer(body, token);
+  else if (def === "emulators") await settingsEmulators(body, token);
+  else settingsAbout(body);
+}
+
+async function settingsServer(body, token) {
+  const cfg = state.config || (await api.config()).config;
+  const server = state.status?.server || {};
+  const activeId = cfg.active_server;
+  const list = (cfg.servers || []).map((s) => h("div", { class: "server-row" },
+    h("div", { class: "info" },
+      h("div", { class: "name" }, s.name || hostOf(s.url)),
+      h("div", { class: "url" }, s.url),
+    ),
+    s.id === activeId ? h("span", { class: "pillty" }, "Active") : h("button", { class: "btn small ghost", onClick: () => activateServer(s.id) }, "Use"),
+    h("button", { class: "icon-btn small", title: "Remove server", "aria-label": `Remove ${s.url}`, onClick: () => removeServer(s.id) }, icon("trash")),
+  ));
+
+  const authMode = h("select", { class: "select", id: "srvAuthMode" },
+    [["pair", "Pair a new token"], ["token", "Client token"], ["password", "Username & password"]].map(([v, l]) => h("option", { value: v }, l)),
+  );
+  const activeEntry = (cfg.servers || []).find((item) => item.id === activeId) || {};
+  const existingAuth = activeEntry.auth || {};
+  authMode.value = existingAuth.mode === "token" ? "token" : existingAuth.mode === "password" ? "password" : "pair";
+  const urlInput = h("input", { class: "input", id: "srvUrl", placeholder: "http://192.168.86.30:7676", value: server.url || "", spellcheck: "false" });
+  const nameInput = h("input", { class: "input", id: "srvName", placeholder: "Living-room RomM", value: server.name || "" });
+  const tokenInput = h("input", { class: "input", id: "srvToken", type: "password", placeholder: existingAuth.has_secret ? "•••••••• stored — leave blank to keep" : "rmm_…", autocomplete: "off" });
+  const userInput = h("input", { class: "input", id: "srvUser", placeholder: "james", autocomplete: "username", value: existingAuth.mode === "password" ? existingAuth.username || "" : "" });
+  const passInput = h("input", { class: "input", id: "srvPass", type: "password", autocomplete: "current-password", placeholder: existingAuth.has_secret ? "•••••••• stored — leave blank to keep" : "" });
+  const authFields = h("div", { class: "form-grid", id: "srvAuthFields" });
+  const statusLine = h("p", { class: "hint" }, server.reachable ? `Reachable · RomM ${server.version || ""}` : (server.error || ""));
+  if (server.reachable) statusLine.classList.add("good");
+
+  function paintAuthFields() {
+    const mode = authMode.value;
+    authFields.replaceChildren();
+    if (mode === "pair") {
+      authFields.append(h("div", { class: "field span" },
+        h("div", { class: "hint" }, "Save the address, then start a pairing to approve in RomM. This creates a token dedicated to RomMArcade."),
+        h("button", { class: "btn", style: { marginTop: "10px" }, onClick: () => startPairFromSettings(urlInput.value, nameInput.value) }, icon("server"), "Start pairing"),
+      ));
+    } else if (mode === "token") {
+      authFields.append(h("div", { class: "field span" }, h("label", { for: "srvToken" }, "Client token"), tokenInput,
+        h("div", { class: "hint" }, "A token from RomM, Client tokens. Leave the masked value untouched to keep the stored one.")));
+    } else {
+      authFields.append(
+        h("div", { class: "field" }, h("label", { for: "srvUser" }, "Username"), userInput),
+        h("div", { class: "field" }, h("label", { for: "srvPass" }, "Password"), passInput),
+      );
+    }
+  }
+  authMode.addEventListener("change", paintAuthFields);
+  paintAuthFields();
+
+  const card = h("div", { class: "card" },
+    h("div", { class: "card-head" },
+      h("div", { class: "grow" }, h("h3", null, "Servers"), h("p", { class: "sub" }, "RomMArcade can keep several RomM addresses and switch between them. The active one feeds the library.")),
+    ),
+    list.length ? h("div", { class: "server-list" }, list) : h("p", { class: "hint", style: { marginBottom: "14px" } }, "No server yet."),
+    h("div", { class: "divider" }),
+    h("div", { class: "form-grid" },
+      h("div", { class: "field span" }, h("label", { for: "srvUrl" }, "Server URL"), urlInput),
+      h("div", { class: "field" }, h("label", { for: "srvName" }, "Display name"), nameInput),
+      h("div", { class: "field" }, h("label", { for: "srvAuthMode" }, "Authentication"), authMode),
+      h("div", { class: "field span" }, authFields),
+    ),
+    statusLine,
+    h("div", { class: "row end", style: { marginTop: "16px" } },
+      h("button", { class: "btn", onClick: () => testFromSettings(urlInput.value, statusLine) }, icon("refresh"), "Test"),
+      h("button", { class: "btn primary", onClick: () => saveServerFromSettings(urlInput.value, nameInput.value, authMode.value, { token: tokenInput.value, username: userInput.value, password: passInput.value }) }, icon("check"), "Save server"),
+    ),
+  );
+  body.append(card);
+}
+
+async function activateServer(id) {
+  try {
+    const result = await api.activateServer(id);
+    state.status = await api.status();
+    state.platforms = null;
+    state.installs = null;
+    state.config = (await api.config()).config;
+    paintServerPill();
+    toast(`Now using ${result.server.name || hostOf(result.server.url)}`, "good");
+    route();
+  } catch (error) { toast(error.message, "bad"); }
+}
+
+async function removeServer(id) {
+  if (!confirm("Remove this server from RomMArcade? Installed games stay on disk.")) return;
+  try {
+    await api.removeServer(id);
+    state.config = (await api.config()).config;
+    state.status = await api.status();
+    state.platforms = null;
+    state.installs = null;
+    paintServerPill();
+    route();
+  } catch (error) { toast(error.message, "bad"); }
+}
+
+async function testFromSettings(url, statusLine) {
+  statusLine.className = "hint";
+  statusLine.textContent = "Testing…";
+  try {
+    const result = await api.testServer({ url });
+    statusLine.textContent = `Reachable · RomM ${result.server.version || ""}${result.server.user ? " · " + result.server.user.username : ""}`;
+    statusLine.classList.add("good");
+  } catch (error) {
+    statusLine.textContent = error.message;
+    statusLine.classList.add("bad");
+  }
+}
+
+async function saveServerFromSettings(url, name, mode, secrets) {
+  try {
+    let auth;
+    if (mode === "token" && secrets.token) auth = { mode: "token", token: secrets.token };
+    else if (mode === "password" && secrets.username && secrets.password) auth = { mode: "password", username: secrets.username, password: secrets.password };
+    else if (mode === "pair") auth = undefined;
+    else auth = undefined; // blank secret: keep the stored auth untouched
+    if (mode === "pair") {
+      const cfg = await api.saveConfig({ server: { url, name } });
+      state.config = cfg.config;
+      await startPairFromSettings(url, name);
+      return;
+    }
+    const result = await api.saveConfig(auth ? { server: { url, name, auth } } : { server: { url, name } });
+    state.config = result.config;
+    state.status = await api.status();
+    state.platforms = null;
+    state.installs = null;
+    paintServerPill();
+    toast("Server saved", "good");
+    route();
+  } catch (error) { toast(error.message, "bad"); }
+}
+
+async function startPairFromSettings(url, name) {
+  if (!url) { toast("Enter a server URL first", "bad"); return; }
+  try {
+    const pair = await api.pairStart({ url, name });
+    const sheet = h("div", { class: "sheet" },
+      h("h2", null, "Pair with RomM"),
+      h("p", null, "Open this address in RomM and approve the device. RomMArcade receives its own token."),
+      h("div", { class: "pair-box" },
+        h("div", { class: "pair-code" }, pair.user_code),
+        h("a", { class: "pair-url", href: pair.verification_url, target: "_blank", rel: "noreferrer" }, pair.verification_url),
+        h("div", { class: "pair-wait" }, h("span", { class: "spinner" }), "Waiting for approval…"),
+      ),
+      h("div", { class: "row end" }, h("button", { class: "btn ghost", onClick: closeModal }, "Later")),
+    );
+    const close = openModal(sheet);
+    const started = Date.now();
+    const poll = async () => {
+      try {
+        const result = await api.pairPoll({ device_code: pair.device_code });
+        if (result.status === "approved") {
+          state.config = (await api.config()).config;
+          state.status = await api.status();
+          state.platforms = null;
+          state.installs = null;
+          paintServerPill();
+          close();
+          toast(`Paired as ${result.user?.username || "a RomM user"}`, "good");
+          route();
+          return;
+        }
+        if (["denied", "expired"].includes(result.status)) {
+          close();
+          toast(result.status === "denied" ? "Pairing was denied in RomM" : "The pairing code expired", "bad");
+          return;
+        }
+      } catch (error) { /* keep waiting */ }
+      if (Date.now() - started < (Number(pair.expires_in) || 600) * 1000 && !document.getElementById("modal").hidden) {
+        setTimeout(poll, Math.max(3, Number(pair.interval) || 5) * 1000);
+      }
+    };
+    setTimeout(poll, Math.max(3, Number(pair.interval) || 5) * 1000);
+  } catch (error) { toast(error.message, "bad"); }
+}
+
+async function settingsEmulators(body, token) {
+  let emu = null;
+  let platforms = [];
+  try { [emu, platforms] = await Promise.all([api.emudeck(), getPlatforms()]); } catch (error) {
+    body.append(h("div", { class: "card" }, h("h3", null, "EmuDeck"), h("p", { class: "sub" }, error.message)));
+    return;
+  }
+  if (token !== state.renderToken) return;
+  state.emudeck = emu;
+  const mapping = new Map((emu.platforms || []).map((p) => [p.platform, p]));
+  const dirs = emu.rom_dirs || [];
+  const launchers = emu.launchers || [];
+  const cores = emu.cores || [];
+  const rows = platforms
+    .filter((p) => Number(p.rom_count) > 0)
+    .sort((a, b) => String(a.display_name || a.name).localeCompare(String(b.display_name || b.name)))
+    .map((p) => {
+      const key = p.fs_slug || p.slug;
+      const entry = mapping.get(key) || p.local || {};
+      const dirSelect = h("select", { class: "select", "aria-label": `EmuDeck folder for ${key}` },
+        h("option", { value: "" }, "— unmapped —"),
+        dirs.map((dir) => h("option", { value: dir, selected: dir === entry.dir }, dir)),
+      );
+      const launcherSelect = h("select", { class: "select", "aria-label": `Launcher for ${key}` },
+        h("option", { value: "" }, "— none —"),
+        launchers.map((l) => h("option", { value: l.id, selected: l.id === entry.launcher }, `${l.name}${l.ready ? "" : " (missing)"}`)),
+      );
+      const coreSelect = h("select", { class: "select", "aria-label": `Core for ${key}` },
+        h("option", { value: "" }, "— auto —"),
+        cores.map((core) => h("option", { value: core, selected: core === entry.core }, core)),
+      );
+      const save = async () => {
+        try {
+          await api.mapPlatform({ platform: key, dir: dirSelect.value, launcher: launcherSelect.value, core: coreSelect.value });
+          toast(`${p.display_name || key} mapping saved`, "good");
+          state.platforms = null;
+        } catch (error) { toast(error.message, "bad"); }
+      };
+      dirSelect.addEventListener("change", save);
+      launcherSelect.addEventListener("change", save);
+      coreSelect.addEventListener("change", save);
+      return h("tr", null,
+        h("td", { class: "platform" }, p.display_name || p.name || key, h("small", null, key)),
+        h("td", null, dirSelect),
+        h("td", null, launcherSelect),
+        h("td", null, coreSelect),
+        h("td", { class: "status" }, entry.exists ? h("span", { class: "yes" }, icon("check")) : h("span", { class: "no" }, icon("alert"))),
+      );
+    });
+
+  const emuCard = h("div", { class: "card" },
+    h("div", { class: "card-head" },
+      h("div", { class: "grow" }, h("h3", null, "EmuDeck"), h("p", { class: "sub" }, "Detected installation and the launchers RomMArcade can hand a ROM to.")),
+      h("button", { class: "btn small", onClick: () => refreshEmudeck() }, icon("refresh"), "Rescan"),
+    ),
+    emu.detected
+      ? h("div", { class: "emu-status" },
+          h("div", { class: "glyph" }, icon("folder")),
+          h("div", { class: "txt" },
+            h("div", { class: "t" }, emu.root),
+            h("div", { class: "s" }, `ROMs ${emu.roms_root}`),
+            h("div", { class: "s" }, `BIOS ${emu.bios_root}`),
+            h("div", { class: "s" }, `Launchers ${emu.launchers_root}`),
+          ),
+          h("span", { class: "badge local" }, "Found"),
+        )
+      : h("div", { class: "emu-status" },
+          h("div", { class: "glyph" }, icon("alert")),
+          h("div", { class: "txt" }, h("div", { class: "t" }, "EmuDeck not found"),
+            h("div", { class: "s" }, "Set a root below, or install EmuDeck and rescan.")),
+        ),
+    h("div", { class: "launcher-chips" }, launchers.map((l) => h("span", { class: `launcher-chip ${l.ready ? "ready" : "dead"}`, title: l.path }, l.name))),
+    h("div", { class: "form-grid", style: { marginTop: "16px" } },
+      h("div", { class: "field span" },
+        h("label", { for: "emuRoot" }, "EmuDeck root override"),
+        h("input", { class: "input", id: "emuRoot", placeholder: "/home/james/Emulation", value: state.config?.emudeck?.root || "" }),
+        h("div", { class: "hint" }, "Leave blank to use EmuDeck's own settings.json. A path accepts either the Emulation folder or the folder that contains it."),
+      ),
+    ),
+    h("div", { class: "row end", style: { marginTop: "14px" } },
+      h("button", { class: "btn", onClick: () => saveEmuRoot() }, icon("check"), "Save root"),
+    ),
+  );
+
+  const mapCard = h("div", { class: "card" },
+    h("div", { class: "card-head" },
+      h("div", { class: "grow" }, h("h3", null, "Platform map"), h("p", { class: "sub" }, "Where each RomM platform lands in EmuDeck, and which launcher and core opens it. Changes apply immediately.")),
+    ),
+    h("div", { class: "map-wrap" },
+      h("table", { class: "map-table" },
+        h("thead", null, h("tr", null,
+          h("th", null, "Platform"), h("th", null, "EmuDeck folder"), h("th", null, "Launcher"), h("th", null, "Core"), h("th", null, ""),
+        )),
+        h("tbody", null, rows),
+      ),
+    ),
+  );
+  body.append(emuCard, mapCard);
+}
+
+async function refreshEmudeck() {
+  state.platforms = null;
+  state.emudeck = null;
+  try { await api.emudeck(); } catch { /* ignore */ }
+  route();
+}
+
+async function saveEmuRoot() {
+  const value = document.getElementById("emuRoot")?.value?.trim() || "";
+  try {
+    const result = await api.saveConfig({ emudeck: { root: value } });
+    state.config = result.config;
+    state.platforms = null;
+    state.emudeck = null;
+    toast("EmuDeck root saved", "good");
+    route();
+  } catch (error) { toast(error.message, "bad"); }
+}
+
+function settingsAbout(body) {
+  const link = (href, label) => h("a", { class: "btn small", href, target: "_blank", rel: "noreferrer" }, label, icon("external"));
+  body.append(
+    h("div", { class: "card" },
+      h("div", { class: "card-head" },
+        h("div", { class: "grow" }, h("h3", null, "RomMArcade"), h("p", { class: "sub" }, state.status?.tagline || "Your RomM library, in an arcade shell.")),
+      ),
+      h("div", { class: "facts" },
+        fact("Version", state.status?.version || "—"),
+        fact("Server", state.status?.server?.url || "Not configured"),
+        fact("EmuDeck", state.status?.emudeck?.root || "Not found"),
+        fact("Data", "/.local/share/rommarcade", "", true),
+      ),
+      h("div", { class: "row", style: { marginTop: "16px" } },
+        link("https://github.com/jkoehler11/RomMArcade", "Source"),
+        h("button", { class: "btn small", onClick: () => showLog() }, icon("folder"), "Service log"),
+        h("button", { class: "btn small", onClick: () => showDeeplinkHelp() }, icon("external"), "URL scheme"),
+      ),
+    ),
+    h("div", { class: "card" },
+      h("h3", null, "How the pieces fit"),
+      h("p", { class: "sub", style: { marginTop: "8px", lineHeight: "1.65" } },
+        "RomMArcade is a local service and this web UI. It reads your RomM library over HTTP, installs games into EmuDeck's folders, and launches EmuDeck's own launcher scripts. Saves, BIOS and emulator settings stay EmuDeck's, not ours."),
+    ),
+  );
+}
+
+async function showLog() {
+  try {
+    const data = await api.log(250);
+    openModal(h("div", { class: "sheet" },
+      h("h2", null, "Service log"),
+      h("pre", { class: "mono", style: { fontSize: "10.5px", lineHeight: "1.5", color: "var(--muted)", whiteSpace: "pre-wrap", maxHeight: "60vh", overflow: "auto" } }, (data.lines || []).join("\n") || "Empty."),
+      h("div", { class: "row end" }, h("button", { class: "btn", onClick: closeModal }, "Close")),
+    ));
+  } catch (error) { toast(error.message, "bad"); }
+}
+
+function showDeeplinkHelp() {
+  openModal(h("div", { class: "sheet" },
+    h("h2", null, "rommarcade:// links"),
+    h("p", null, "Registering the URL handler lets RomM, a desktop shortcut or a script open a game here. The service consumes the target once, so a reload does not navigate again."),
+    h("pre", { class: "mono", style: { padding: "12px", background: "#0a0d1a", border: "1px solid var(--line)", borderRadius: "9px", fontSize: "11px", whiteSpace: "pre-wrap" } },
+      "rommarcade://open?rom=168&platform=nes&name=1942\nrommarcade://open?rom=168&play=1"),
+    h("p", { class: "hint" }, "Install the handler with packaging/rommarcade-open and packaging/rommarcade-url.desktop, then approve the button in RomM."),
+    h("div", { class: "row end" }, h("button", { class: "btn", onClick: closeModal }, "Close")),
+  ));
+}
+
+// ---------------------------------------------------------------- utils ---
+function hostOf(url) {
+  try { return new URL(url).host; } catch { return url || ""; }
+}
+
+boot();

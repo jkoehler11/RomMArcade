@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=RomMArcade URL Handler
+Comment=Open a game in RomMArcade
+Exec=__BIN__/rommarcade-open %u
+MimeType=x-scheme-handler/rommarcade;
+NoDisplay=true
+Terminal=false

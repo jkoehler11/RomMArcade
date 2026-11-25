@@ -1,0 +1,239 @@
+// Tiny DOM helpers and formatting shared by every view.
+
+export function h(tag, attrs = null, ...children) {
+  const el = document.createElement(tag);
+  if (attrs && typeof attrs === "object" && !(attrs instanceof Node) && !Array.isArray(attrs)) {
+    for (const [key, value] of Object.entries(attrs)) {
+      if (value === null || value === undefined || value === false) continue;
+      if (key === "class" || key === "className") el.className = value;
+      else if (key === "dataset") Object.assign(el.dataset, value);
+      else if (key === "style" && typeof value === "object") Object.assign(el.style, value);
+      else if (key === "html") el.innerHTML = value;
+      else if (key.startsWith("on") && typeof value === "function") el.addEventListener(key.slice(2).toLowerCase(), value);
+      else if (value === true) el.setAttribute(key, "");
+      else el.setAttribute(key, value);
+    }
+  } else if (attrs !== null && attrs !== undefined) {
+    children.unshift(attrs);
+  }
+  append(el, children);
+  return el;
+}
+
+function append(el, children) {
+  for (const child of children.flat(Infinity)) {
+    if (child === null || child === undefined || child === false) continue;
+    el.append(child instanceof Node ? child : document.createTextNode(String(child)));
+  }
+}
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+export function icon(name, cls = "icon") {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("class", cls);
+  svg.setAttribute("aria-hidden", "true");
+  const use = document.createElementNS(SVG_NS, "use");
+  use.setAttribute("href", `#i-${name}`);
+  svg.append(use);
+  return svg;
+}
+
+export function fmtBytes(bytes) {
+  const value = Number(bytes) || 0;
+  if (value < 1024) return `${value} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let n = value / 1024;
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i += 1; }
+  return `${n >= 10 || i === 0 ? n.toFixed(0) : n.toFixed(1)} ${units[i]}`;
+}
+
+export function fmtSpeed(bytesPerSecond) {
+  if (!bytesPerSecond) return "";
+  return `${fmtBytes(bytesPerSecond)}/s`;
+}
+
+export function timeAgo(iso) {
+  if (!iso) return "";
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "";
+  const seconds = Math.max(1, Math.round((Date.now() - then) / 1000));
+  if (seconds < 60) return "just now";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  return new Date(then).toLocaleDateString();
+}
+
+export function shortDate(iso) {
+  if (!iso) return "";
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? "" : date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
+export function debounce(fn, wait = 300) {
+  let timer = null;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), wait);
+  };
+}
+
+export function initials(name) {
+  return String(name || "?")
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((word) => word[0])
+    .join("")
+    .toUpperCase();
+}
+
+export function toast(message, kind = "info", timeout = 4200) {
+  const root = document.getElementById("toasts");
+  if (!root) return;
+  const glyph = kind === "good" ? "check" : kind === "bad" ? "alert" : "cart";
+  const el = h("div", { class: `toast ${kind}` },
+    icon(glyph),
+    h("div", { class: "msg" }, message),
+    h("button", { class: "close", "aria-label": "Dismiss", onClick: () => el.remove() }, icon("close", "icon")),
+  );
+  root.append(el);
+  setTimeout(() => el.remove(), timeout);
+}
+
+export function openModal(node, { onClose } = {}) {
+  const root = document.getElementById("modal");
+  root.hidden = false;
+  root.replaceChildren(node);
+  const close = (event) => {
+    if (event && event.target !== root) return;
+    root.hidden = true;
+    root.replaceChildren();
+    document.removeEventListener("keydown", onKey);
+    onClose?.();
+  };
+  const onKey = (event) => { if (event.key === "Escape") close(); };
+  root.addEventListener("click", close);
+  document.addEventListener("keydown", onKey);
+  return close;
+}
+
+export function closeModal() {
+  const root = document.getElementById("modal");
+  if (!root || root.hidden) return;
+  root.hidden = true;
+  root.replaceChildren();
+}
+
+export function emptyState({ glyph = "cart", title, body, action = null }) {
+  return h("div", { class: "empty" },
+    h("div", { class: "glyph" }, icon(glyph)),
+    h("h3", null, title),
+    body ? h("p", null, body) : null,
+    action,
+  );
+}
+
+export function coverImage(rom, { size = "small", className = "" } = {}) {
+  const wrap = h("div", { class: `cover ${className}` });
+  if (rom.cover) {
+    const img = h("img", {
+      src: `/api/cover/${rom.id}?size=${size}`,
+      alt: "",
+      loading: "lazy",
+      decoding: "async",
+    });
+    img.addEventListener("error", () => {
+      img.remove();
+      wrap.prepend(fallbackCover(rom));
+    }, { once: true });
+    wrap.append(img);
+  } else {
+    wrap.append(fallbackCover(rom));
+  }
+  return wrap;
+}
+
+function fallbackCover(rom) {
+  const label = rom.platform_name || rom.platform_fs_slug || "RomM";
+  return h("div", { class: "cover-fallback" },
+    h("div", { class: "glyph" }, icon("cart")),
+    h("div", { class: "name" }, rom.name || label),
+  );
+}
+
+export function gameCard(rom, { showPlay = true } = {}) {
+  const installed = Boolean(rom.installed);
+  const card = h("article", {
+    class: `game-card ${rom.installing ? "installing" : ""}`,
+    dataset: { rom: rom.id },
+    tabindex: "0",
+    role: "link",
+    "aria-label": rom.name,
+    onClick: (event) => {
+      if (event.target.closest("[data-stop]")) return;
+      location.hash = `#/game/${rom.id}`;
+    },
+    onKeydown: (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        location.hash = `#/game/${rom.id}`;
+      }
+    },
+  });
+  const cover = coverImage(rom, { size: "small" });
+  const badges = h("div", { class: "badges" });
+  if (installed) badges.append(h("span", { class: "badge local" }, "Local"));
+  if (rom.has_multiple_files) badges.append(h("span", { class: "badge muted" }, "Multi"));
+  if (!installed && rom.mapping && !rom.mapping.exists) badges.append(h("span", { class: "badge warn" }, "No folder"));
+  card.append(cover, badges);
+  if (showPlay) {
+    card.append(h("button", {
+      class: "card-play",
+      "data-stop": "",
+      title: installed ? "Play" : "Install and play",
+      "aria-label": installed ? `Play ${rom.name}` : `Install ${rom.name}`,
+      onClick: (event) => {
+        event.stopPropagation();
+        if (installed) window.dispatchEvent(new CustomEvent("rommarcade:play", { detail: { romId: rom.id } }));
+        else window.dispatchEvent(new CustomEvent("rommarcade:install", { detail: { romId: rom.id, play: true } }));
+      },
+    }, icon("play")));
+  }
+  card.append(h("div", { class: "meta" },
+    h("h3", { class: "game-name" }, rom.name),
+    h("p", { class: "game-sub" },
+      h("span", null, rom.platform_name || rom.platform_fs_slug || "Unknown"),
+      h("span", { class: "size" }, rom.size ? fmtBytes(rom.size) : ""),
+    ),
+  ));
+  return card;
+}
+
+export function platformCard(platform, active = false) {
+  const local = platform.local || {};
+  const roms = Number(platform.rom_count) || 0;
+  return h("a", {
+    class: `plat-card ${active ? "active" : ""}`,
+    href: `#/platform/${encodeURIComponent(platform.fs_slug || platform.slug)}`,
+  },
+    h("div", { class: "plat-icon" }, platform.logo_url
+      ? h("img", { src: platform.logo_url, alt: "", loading: "lazy" })
+      : initials(platform.display_name || platform.name || platform.slug)),
+    h("div", null,
+      h("div", { class: "plat-name" }, platform.display_name || platform.name || platform.fs_slug),
+      h("div", { class: "plat-sub" },
+        h("span", null, `${roms} game${roms === 1 ? "" : "s"}`),
+        local.installed_count ? h("span", { class: "local" }, `${local.installed_count} local`) : null,
+      ),
+    ),
+  );
+}
+
+export function skeletonGrid(count = 12) {
+  return h("div", { class: "grid" }, Array.from({ length: count }, () => h("div", { class: "skel card" })));
+}

@@ -1,0 +1,75 @@
+// Fetch wrapper for the local RomMArcade API.
+
+class ApiError extends Error {
+  constructor(message, status = 0, payload = null) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.payload = payload || {};
+  }
+}
+
+async function request(path, { method = "GET", body = null, timeout = 30000 } = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
+  try {
+    const response = await fetch(path, {
+      method,
+      headers: body ? { "Content-Type": "application/json" } : {},
+      body: body ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+    });
+    const text = await response.text();
+    let payload = null;
+    if (text) {
+      try { payload = JSON.parse(text); } catch { payload = { error: text }; }
+    }
+    if (!response.ok) {
+      throw new ApiError(payload?.error || `Request failed (${response.status})`, response.status, payload);
+    }
+    return payload;
+  } catch (error) {
+    if (error.name === "AbortError") throw new ApiError("The RomMArcade service did not answer in time.", 0);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export const api = {
+  status: () => request("/api/status"),
+  config: () => request("/api/config"),
+  saveConfig: (body) => request("/api/config", { method: "PUT", body }),
+  testServer: (body) => request("/api/config/test", { method: "POST", body, timeout: 40000 }),
+  pairStart: (body) => request("/api/config/pair/start", { method: "POST", body, timeout: 40000 }),
+  pairPoll: (body) => request("/api/config/pair/poll", { method: "POST", body, timeout: 40000 }),
+  servers: () => request("/api/servers"),
+  addServer: (body) => request("/api/servers", { method: "POST", body }),
+  activateServer: (id) => request(`/api/servers/${encodeURIComponent(id)}/activate`, { method: "POST" }),
+  removeServer: (id) => request(`/api/servers/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  platforms: () => request("/api/platforms", { timeout: 60000 }),
+  roms: (params) => {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(params || {})) {
+      if (value !== null && value !== undefined && value !== "") query.set(key, value);
+    }
+    return request(`/api/roms?${query}`, { timeout: 60000 });
+  },
+  rom: (id) => request(`/api/roms/${Number(id)}`, { timeout: 60000 }),
+  firmware: (platformId) => request(`/api/firmware/${Number(platformId)}`),
+  emudeck: () => request("/api/emudeck", { timeout: 60000 }),
+  mapPlatform: (body) => request("/api/emudeck/mapping", { method: "POST", body }),
+  installs: () => request("/api/installs"),
+  repairInstalls: () => request("/api/installs/repair", { method: "POST" }),
+  downloads: () => request("/api/downloads"),
+  cancelDownload: (id) => request(`/api/downloads/${encodeURIComponent(id)}/cancel`, { method: "POST" }),
+  install: (romId) => request("/api/install", { method: "POST", body: { rom_id: romId } }),
+  bios: (platformId) => request("/api/bios", { method: "POST", body: { platform_id: platformId } }),
+  play: (romId, dryRun = false) => request("/api/play", { method: "POST", body: { rom_id: romId, dry_run: dryRun } }),
+  deeplink: () => request("/api/deeplink"),
+  pushDeeplink: (url) => request("/api/deeplink", { method: "POST", body: { url } }),
+  history: () => request("/api/history"),
+  log: (lines = 200) => request(`/api/log?lines=${lines}`),
+};
+
+export { ApiError };

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=RomMArcade
+Comment=Your RomM library, in an arcade shell
+Exec=__BIN__/rommarcade-launch
+Icon=applications-games
+Terminal=false
+Categories=Game;Emulator;
+Keywords=romm;emudeck;emulator;games;arcade;
+StartupNotify=true

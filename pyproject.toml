@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rommarcade"
+version = "1.0.0"
+description = "An EmuDeck-native arcade front-end for RomM libraries"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "jkoehler11" }]
+dependencies = []
+
+[project.scripts]
+rommarcade = "rommarcade.__main__:main"
+
+[tool.setuptools]
+packages = ["rommarcade"]
+
+[tool.setuptools.package-data]
+rommarcade = ["web/*.html", "web/css/*.css", "web/js/*.js"]
