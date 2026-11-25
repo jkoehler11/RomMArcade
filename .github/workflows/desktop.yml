@@ -46,7 +46,7 @@ jobs:
 
       - name: PyGObject for the GTK backend
         if: runner.os == 'Linux'
-        run: python -m pip install pygobject
+        run: python -m pip install 'pygobject==3.50.0'
 
       - name: Build
         run: python packaging/build_desktop.py
