@@ -805,7 +805,7 @@ function cardPlayButtonFor(romId, name = "") {
   }, icon("play"));
 }
 
-function markInstalledInView(romId) {
+function markInstalledInView(romId, name = "") {
   const current = parseRoute();
   if (current.name === "game" && Number(current.args[0]) === Number(romId)) {
     const actions = document.querySelector(".game-actions");
@@ -814,6 +814,7 @@ function markInstalledInView(romId) {
       actions.replaceChildren(
         playButtonFor(romId),
         h("span", { class: "chip ok" }, icon("check"), "Installed"),
+        h("button", { class: "btn danger", onClick: () => openUninstall({ id: romId, name }) }, icon("trash"), "Uninstall"),
       );
       if (back) actions.append(back);
     }
@@ -890,7 +891,7 @@ function syncInstallState() {
   if (!job && hasProgress) {
     const doneJob = state.downloads.find((entry) => Number(entry.rom_id) === Number(current.args[0])
       && entry.status === "done");
-    if (doneJob) markInstalledInView(current.args[0]);
+    if (doneJob) markInstalledInView(current.args[0], doneJob.name);
     else route();
     return;
   }
@@ -927,7 +928,7 @@ async function pollDownloads() {
         const current = parseRoute();
         const wantsPlay = state.pendingPlay.get(Number(job.rom_id));
         state.pendingPlay.delete(Number(job.rom_id));
-        markInstalledInView(job.rom_id);
+        markInstalledInView(job.rom_id, job.name);
         if (wantsPlay) playRom(job.rom_id);
         // A game page is already correct after the in-place swap.  Other
         // views still need a refresh so the new install appears in their rails.
