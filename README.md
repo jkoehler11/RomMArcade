@@ -37,7 +37,8 @@ RomM server  ──HTTP──▶  RomMArcade  ──files──▶  ~/Emulation/
   (`retroarch.sh`, `dolphin-emu.sh`, `duckstation.sh`, `pcsx2-qt.sh`, `melonds.sh`, `azahar.sh`,
   `cemu.sh`, `flycast.sh`, …), passing a RetroArch core when the system needs one.
 - **A URL scheme.** `rommarcade://open?rom=180&play=1` opens, installs and starts a game from a
-  browser, a desktop shortcut, or RomM's own **Play** menu through the bundled plugin manifest.
+  browser, a desktop shortcut, or RomM's own **Play** menu through the
+  [RomMArcade plugin](https://github.com/jkoehler11/rommarcade-plugin).
 - **Uninstall with a choice.** Remove an installed game from EmuDeck's ROM folder, with a checkbox
   to also remove that game's saves and save states from EmuDeck's `saves/` and `states/` folders.
 - **Live install progress.** A download tray with per-job progress, speed, cancel, and automatic
@@ -141,16 +142,18 @@ the running service and starts it if necessary.
 
 ### The RomM plugin
 
-`plugin/plugin.json` is a manifest for RomM's plugin shelf. It adds **Play in RomMArcade** to a
-game's Play menu, using `rommarcade://open?rom={rom_id}&platform={platform_slug}&name={rom_name}`.
-Install it in RomM under **Settings → Plugins**, or point the server at the raw file:
+The plugin that adds **Play in RomMArcade** to RomM's Play menu lives in its own repository,
+[jkoehler11/rommarcade-plugin](https://github.com/jkoehler11/rommarcade-plugin), together with the
+`rommarcade://` handler for desktop installs that did not register one. Install it in RomM under
+**Settings → Plugins**, or point the server at the raw manifest:
 
 ```
-https://raw.githubusercontent.com/jkoehler11/RomMArcade/main/plugin/plugin.json
+https://raw.githubusercontent.com/jkoehler11/rommarcade-plugin/main/plugin.json
 ```
 
-Its two settings: hide the button, and append `&play=1` so the button installs and starts the game
-in one press. The plugin is optional; the app works without it.
+That repository also documents its settings (`&play=1` makes the button install and start a game in
+one press, clearing it only opens the game) and the platforms an action can be limited to. Nothing
+in it runs on the RomM server, and the app works without it.
 
 ## EmuDeck integration
 
