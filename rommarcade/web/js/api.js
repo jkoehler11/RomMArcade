@@ -59,6 +59,7 @@ export const api = {
   firmware: (platformId) => request(`/api/firmware/${Number(platformId)}`),
   emudeck: () => request("/api/emudeck", { timeout: 60000 }),
   openInstaller: () => request("/api/emudeck/open-installer", { method: "POST", body: {} }),
+  rescanEmudeck: () => request("/api/emudeck/rescan", { method: "POST", body: {} }),
   mapPlatform: (body) => request("/api/emudeck/mapping", { method: "POST", body }),
   installs: () => request("/api/installs"),
   uninstall: (romId, removeSaves = true) => request(`/api/installs/${Number(romId)}/uninstall`, { method: "POST", body: { remove_saves: Boolean(removeSaves) } }),

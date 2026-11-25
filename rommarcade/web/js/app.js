@@ -456,6 +456,9 @@ async function renderGame(id, token) {
 
   const actions = [];
   const emuOn = mapping.enabled !== false;
+  const missingEmulator = emuOn && Boolean(mapping.launcher) && mapping.launcher_ready === false;
+  const launcherName = mapping.launcher_name || mapping.launcher || "Emulator";
+  const emuInstaller = state.status?.emudeck?.installer || "";
   const installJob = activeInstallJob(rom.id);
   if (!emuOn) {
     actions.push(h("a", { class: "btn", href: "#/emudeck" }, icon("settings"), "Turn on EmuDeck integration"));
@@ -465,12 +468,21 @@ async function renderGame(id, token) {
   } else if (installJob) {
     actions.push(installProgressButton(installJob));
   } else if (installed) {
-    actions.push(h("button", { class: "btn primary", onClick: () => playRom(rom.id) }, icon("play"), "Play"));
+    actions.push(h("button", {
+      class: "btn primary",
+      disabled: missingEmulator,
+      title: missingEmulator ? `Install ${launcherName} first` : "",
+      onClick: () => playRom(rom.id),
+    }, icon("play"), "Play"));
     actions.push(h("span", { class: "chip ok" }, icon("check"), "Installed"));
     actions.push(h("button", { class: "btn danger", onClick: () => openUninstall(rom) }, icon("trash"), "Uninstall"));
   } else if (mapping.exists && mapping.launcher) {
-    actions.push(h("button", { class: "btn primary", onClick: () => installRom(rom.id, { play: true }) }, icon("download"), "Install & play"));
-    actions.push(h("button", { class: "btn", onClick: () => installRom(rom.id) }, "Install only"));
+    if (missingEmulator) {
+      actions.push(h("button", { class: "btn primary", onClick: () => installRom(rom.id) }, icon("download"), "Install game"));
+    } else {
+      actions.push(h("button", { class: "btn primary", onClick: () => installRom(rom.id, { play: true }) }, icon("download"), "Install & play"));
+      actions.push(h("button", { class: "btn", onClick: () => installRom(rom.id) }, "Install only"));
+    }
   } else {
     actions.push(h("a", { class: "btn", href: "#/emudeck" }, icon("settings"), "Map this platform"));
   }
@@ -506,6 +518,24 @@ async function renderGame(id, token) {
           : mapping.launcher
             ? `Plays through EmuDeck · ${mapping.launcher_name || mapping.launcher}${mapping.core ? " · " + mapping.core : ""}`
             : "No EmuDeck launcher mapped yet"),
+      missingEmulator
+        ? h("div", { class: "bios-banner" },
+            icon("alert"),
+            h("div", { class: "txt" },
+              h("b", null, `${launcherName} is not installed`),
+              h("div", null, emuInstaller
+                ? "Install it with EmuDeck, then rescan this game."
+                : `Install it from the ${launcherName} website, then rescan this game.`)),
+            h("div", { class: "row" },
+              emuInstaller
+                ? h("button", { class: "btn small", onClick: openEmudeckInstaller }, icon("external"), "Install with EmuDeck")
+                : mapping.launcher_url
+                  ? h("a", { class: "btn small", href: mapping.launcher_url, target: "_blank", rel: "noreferrer" }, icon("external"), `Get ${launcherName}`)
+                  : h("a", { class: "btn small", href: "#/emudeck" }, icon("settings"), "Emulator settings"),
+              h("button", { class: "btn small ghost", onClick: (event) => rescanEmulator(event.currentTarget) }, icon("refresh"), "Rescan"),
+            ),
+          )
+        : null,
       emuOn && missingBios.length
         ? h("div", { class: "bios-banner" },
             icon("alert"),
@@ -528,7 +558,9 @@ async function renderGame(id, token) {
     const request = state.autoPlay;
     state.autoPlay = null;
     if (request.play) {
-      if (installed) playRom(rom.id);
+      if (missingEmulator) {
+        // The game is usable, but the launcher needs an emulator first.
+      } else if (installed) playRom(rom.id);
       else if (mapping.exists && mapping.launcher) installRom(rom.id, { play: true });
     }
   }
@@ -1484,6 +1516,22 @@ async function openEmudeckInstaller() {
     toast(`Opened ${result.path.split("/").pop()}`, "good");
   } catch (error) {
     toast(error.message, "bad");
+  }
+}
+
+async function rescanEmulator(button) {
+  if (button) button.disabled = true;
+  try {
+    await api.rescanEmudeck();
+    state.platforms = null;
+    state.emudeck = null;
+    state.status = await api.status();
+    toast("Emulator scan refreshed", "good");
+    route();
+  } catch (error) {
+    toast(error.message, "bad");
+  } finally {
+    if (button) button.disabled = false;
   }
 }
 

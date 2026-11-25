@@ -288,6 +288,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertTrue(payload["configured"])
         self.assertTrue(payload["server"]["reachable"])
         self.assertEqual(payload["server"]["user"]["username"], "james")
+        self.assertIn("installer", payload["emudeck"])
 
     def test_02_platforms_mapping(self):
         status, payload = self.call("/api/platforms")
@@ -297,7 +298,15 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(by["nes"]["local"]["launcher"], "retroarch")
         self.assertEqual(by["nes"]["local"]["core"], "mesen")
         self.assertTrue(by["nes"]["local"]["exists"])
+        self.assertTrue(by["nes"]["local"]["launcher_ready"])
+        self.assertEqual(by["nes"]["local"]["launcher_url"], "https://www.retroarch.com/")
         self.assertTrue(by["nes"]["logo_url"].startswith("/api/platform-logo/"))
+
+    def test_02b_emudeck_rescan(self):
+        status, payload = self.call("/api/emudeck/rescan", "POST", {})
+        self.assertEqual(status, 200, payload)
+        self.assertTrue(payload["detected"])
+        self.assertTrue(payload["launchers"])
 
     def test_03_cover_proxy(self):
         request = urllib.request.Request(self.base + "/api/cover/180?size=small")
@@ -312,6 +321,8 @@ class IntegrationTests(unittest.TestCase):
         rom = [r for r in payload["items"] if r["id"] == 180][0]
         self.assertEqual(rom["platform_fs_slug"], "nes")
         self.assertTrue(rom["mapping"]["exists"])
+        self.assertTrue(rom["mapping"]["launcher_ready"])
+        self.assertEqual(rom["mapping"]["launcher_url"], "https://www.retroarch.com/")
 
     def test_05_install_and_download(self):
         status, payload = self.call("/api/install", "POST", {"rom_id": 180})

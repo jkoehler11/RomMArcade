@@ -173,6 +173,29 @@ EMULATOR_LABELS = {
     "xenia": "Xenia",
 }
 
+# Official project pages, used when EmuDeck cannot install the emulator for the
+# user.  Keyed by the EmuDeck launcher id.
+EMULATOR_WEBSITES = {
+    "retroarch": "https://www.retroarch.com/",
+    "dolphin-emu": "https://dolphin-emu.org/",
+    "dolphin": "https://dolphin-emu.org/",
+    "cemu": "https://cemu.info/",
+    "duckstation": "https://www.duckstation.org/",
+    "pcsx2-qt": "https://pcsx2.net/",
+    "pcsx2": "https://pcsx2.net/",
+    "ppsspp": "https://www.ppsspp.org/",
+    "melonds": "https://melonds.kuribo64.net/",
+    "azahar": "https://azahar-emu.org/",
+    "lime3ds": "https://lime3ds.github.io/",
+    "citra": "https://citra-emu.org/",
+    "ryujinx": "https://ryujinx.app/",
+    "yuzu": "https://yuzu-emu.org/",
+    "sudachi": "https://github.com/sudachi-emu/sudachi",
+    "flycast": "https://github.com/flyinghead/flycast",
+    "xenia": "https://xenia.jp/",
+    "xenia-emu": "https://xenia.jp/",
+}
+
 _LAUNCHER_CACHE: dict[str, Any] = {"fingerprint": None, "data": None, "lock": threading.Lock()}
 _FLATPAK_CACHE: dict[str, Any] = {"at": 0.0, "apps": set()}
 # Launchers whose script finds a sidecar binary at runtime; an empty backend
@@ -449,6 +472,7 @@ def find_platform_dir(fs_slug: str, roms_root: str, existing: list[str] | None =
 
 def choose_launcher(fs_slug: str, launchers: list[dict[str, Any]], cores: set[str] | None = None) -> dict[str, Any] | None:
     ready = {entry["id"]: entry for entry in launchers if entry.get("ready", True)}
+    available = {entry["id"]: entry for entry in launchers}
     candidates = list(STANDALONE.get(fs_slug, []))
     for candidate in candidates:
         if candidate in ready:
@@ -458,6 +482,14 @@ def choose_launcher(fs_slug: str, launchers: list[dict[str, Any]], cores: set[st
             return ready["retroarch"]
         if fs_slug not in STANDALONE:
             return ready["retroarch"]
+    # Keep the intended emulator in the mapping even when its backend is
+    # missing, so the game page can offer to install it instead of pretending
+    # the platform was never mapped.
+    for candidate in candidates:
+        if candidate in available:
+            return available[candidate]
+    if not candidates and "retroarch" in available:
+        return available["retroarch"]
     return None
 
 
@@ -502,6 +534,7 @@ def platform_mapping(
         "launcher_name": (launcher or {}).get("name") or "",
         "launcher_path": (launcher or {}).get("path") or "",
         "launcher_ready": bool((launcher or {}).get("ready", False)),
+        "launcher_url": EMULATOR_WEBSITES.get((launcher or {}).get("id") or "", ""),
         "core": core or "",
         "source": "override" if override else ("alias" if directory and directory.lower() != fs_slug.lower() else "catalogue"),
     }

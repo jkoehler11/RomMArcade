@@ -428,6 +428,8 @@ class App:
                 "launcher": mapping.get("launcher") or "",
                 "launcher_name": mapping.get("launcher_name") or "",
                 "launcher_path": mapping.get("launcher_path") or "",
+                "launcher_ready": bool(mapping.get("launcher_ready")),
+                "launcher_url": mapping.get("launcher_url") or "",
                 "core": mapping.get("core") or "",
                 "ready": bool(mapping.get("exists") and mapping.get("launcher")),
             },
@@ -595,6 +597,7 @@ class App:
                     "enabled": self.emudeck_enabled(),
                     "detected": bool(emu["detected"]),
                     "root": emu["root"],
+                    "installer": _find_emudeck_installer(),
                     "launchers": len([l for l in emu["launchers"] if l.get("ready")]),
                     "platforms": len(emu["platforms"]) if "platforms" in emu else 0,
                 },
@@ -670,6 +673,13 @@ class App:
             return self._platform_logo(int(match.group(1)))
 
         if route == ("GET", "/api/emudeck"):
+            return 200, JSON, self.emudeck_snapshot()
+
+        if route == ("POST", "/api/emudeck/rescan"):
+            self.require_emudeck()
+            invalidate_emudeck()
+            self._cache_clear()
+            self.log("rescanned EmuDeck launchers and platforms")
             return 200, JSON, self.emudeck_snapshot()
 
         if route == ("POST", "/api/emudeck/open-installer"):
