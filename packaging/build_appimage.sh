@@ -21,6 +21,12 @@ rm -rf "$APPDIR"
 mkdir -p "$APPDIR/usr/lib" "$APPDIR/usr/share/applications" \
   "$APPDIR/usr/share/icons/hicolor/scalable/apps"
 cp -a "$BUNDLE" "$APPDIR/usr/lib/rommarcade"
+# PyInstaller collects the GTK/WebKit stack it sees at build time.  Mixing
+# those libraries with a different distro's WebKit breaks at load time, so
+# keep Python private and let AppImage use the host's GTK/WebKit packages.
+find "$APPDIR/usr/lib/rommarcade/_internal" -maxdepth 1 -name 'lib*.so*' \
+  ! -name 'libpython*.so*' -delete
+rm -rf "$APPDIR/usr/lib/rommarcade/_internal/gi_typelibs"
 cp "$HERE/rommarcade.png" "$APPDIR/rommarcade.png"
 cp "$HERE/rommarcade.png" "$APPDIR/.DirIcon"
 cp "$HERE/rommarcade.svg" "$APPDIR/usr/share/icons/hicolor/scalable/apps/rommarcade.svg"
@@ -28,10 +34,7 @@ cp "$HERE/rommarcade.svg" "$APPDIR/rommarcade.svg"
 
 cat > "$APPDIR/AppRun" <<'EOF'
 #!/bin/sh
-# AppImage keeps the PyInstaller bundle under usr/lib; run it with the
-# bundle's own shared libraries ahead of the host's.
 HERE="$(dirname "$(readlink -f "$0")")"
-export LD_LIBRARY_PATH="$HERE/usr/lib/rommarcade/_internal${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 exec "$HERE/usr/lib/rommarcade/RomMArcade" "$@"
 EOF
 chmod +x "$APPDIR/AppRun"
