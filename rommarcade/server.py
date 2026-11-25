@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import mimetypes
 import os
@@ -18,6 +19,13 @@ import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
+
+try:  # Optional: turns IGDB's black/white-backed logos into tidy tiles.
+    from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageOps, ImageStat
+
+    PIL_AVAILABLE = True
+except ImportError:  # pragma: no cover - the app still runs, just plainer
+    PIL_AVAILABLE = False
 
 from . import CLIENT_ID, PRODUCT, PRODUCT_TAGLINE, REQUESTED_SCOPES, USER_AGENT, __version__
 from .config import ConfigError, ConfigStore, cache_dir, config_dir, data_dir, log_path
@@ -166,6 +174,7 @@ class App:
             mapping = platform_mapping(platform, emu, emu["launchers"], emu["cores"], overrides)
             item = dict(platform)
             item["logo_url"] = f"/api/platform-logo/{platform.get('id')}" if platform.get("url_logo") else ""
+            item["logo_normalized"] = PIL_AVAILABLE
             item["local"] = {
                 **mapping,
                 "installed_count": counts.get(mapping["platform"], 0),
@@ -848,6 +857,10 @@ class App:
             finally:
                 response.close()
         content_type = _image_type(data, declared)
+        if PIL_AVAILABLE:
+            normalized = _normalize_logo_tile(data)
+            if normalized:
+                data, content_type = normalized, "image/png"
         os.makedirs(directory, exist_ok=True)
         temp = path + ".tmp"
         with open(temp, "wb") as handle:
@@ -1063,6 +1076,84 @@ def _release_year(value: Any) -> int | None:
         if match:
             return int(match.group(1))
     return None
+
+
+def _normalize_logo_tile(data: bytes) -> bytes | None:
+    """Trim a platform logo's backing and fit it on a transparent 320x120 tile.
+
+    IGDB's platform images are a mix of black-backed boxes, white-backed
+    labels and wide wordmarks.  Flood-filling the corner colour turns those
+    into one consistent, readable mark; dark logos are lifted so they do not
+    disappear on the dark card.
+    """
+    if not PIL_AVAILABLE:
+        return None
+    try:
+        image = Image.open(io.BytesIO(data)).convert("RGB")
+    except Exception:
+        return None
+    # Work at card size: 1900px-wide IGDB art gains nothing at 288px output and
+    # makes the flood fill an order of magnitude slower.
+    image.thumbnail((520, 520), Image.LANCZOS)
+    width, height = image.size
+    if width < 8 or height < 8:
+        return None
+    patch = max(4, min(width, height) // 16)
+    corners = [
+        image.crop((0, 0, patch, patch)),
+        image.crop((width - patch, 0, width, patch)),
+        image.crop((0, height - patch, patch, height)),
+        image.crop((width - patch, height - patch, width, height)),
+    ]
+    medians = [ImageStat.Stat(part).median for part in corners]
+    background = tuple(int(sum(m[i] for m in medians) / len(medians)) for i in range(3))
+    neutral = max(background) - min(background) <= 12
+    dark = max(background) < 60
+    light = min(background) > 195
+    mid = 90 <= max(background) <= 175
+    if not (neutral and (dark or light or mid)):
+        # A coloured backdrop is part of the artwork; leave it alone.
+        return None
+    marker = (255, 0, 255)
+    work = image.copy()
+    seeds = [
+        (0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1),
+        (width // 2, 0), (width // 2, height - 1), (0, height // 2), (width - 1, height // 2),
+    ]
+    for point in seeds:
+        try:
+            ImageDraw.floodfill(work, point, marker, thresh=16)
+        except Exception:
+            continue
+    marker_img = Image.new("RGB", image.size, marker)
+    difference = ImageChops.difference(work, marker_img).convert("L")
+    background_mask = difference.point(lambda value: 255 if value == 0 else 0)
+    alpha = ImageOps.invert(background_mask)
+    if alpha.getbbox() is None or ImageStat.Stat(alpha).sum[0] < width * height * 8:
+        return None
+    rgba = image.convert("RGBA")
+    rgba.putalpha(alpha)
+    # A large interior white plate (the Arcade badge) reads as a hot square on
+    # a dark card; drop it when the outside was not already white.
+    if not light:
+        near_white = image.convert("L").point(lambda value: 255 if value >= 228 else 0)
+        white_ratio = ImageStat.Stat(near_white).sum[0] / (width * height * 255)
+        if white_ratio > (0.30 if mid else 0.55):
+            rgba.putalpha(ImageChops.multiply(rgba.getchannel("A"), ImageOps.invert(near_white)))
+    bbox = rgba.getbbox()
+    if bbox:
+        rgba = rgba.crop(bbox)
+    grey = rgba.convert("L")
+    stats = ImageStat.Stat(grey, mask=rgba.getchannel("A"))
+    mean = (stats.mean[0] / 255) if stats.count[0] else 0
+    if mean and mean < 0.44:
+        rgba = ImageEnhance.Brightness(rgba).enhance(min(3.4, 0.58 / mean))
+    rgba.thumbnail((288, 96), Image.LANCZOS)
+    tile = Image.new("RGBA", (320, 120), (0, 0, 0, 0))
+    tile.alpha_composite(rgba, ((320 - rgba.width) // 2, (120 - rgba.height) // 2))
+    out = io.BytesIO()
+    tile.save(out, format="PNG", optimize=True)
+    return out.getvalue()
 
 
 def _image_type(data: bytes, declared: str = "") -> str:

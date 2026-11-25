@@ -214,22 +214,54 @@ export function gameCard(rom, { showPlay = true } = {}) {
   return card;
 }
 
+const LOGO_BOOST = {
+  "3ds": 3.1, "n3ds": 3.1, "atari2600": 2.0, "xbox360": 2.6,
+  "dc": 1.8, "dreamcast": 1.8, "ps2": 1.55, "gc": 1.35, "ngc": 1.35,
+  "genesis": 1.45, "gamegear": 1.3, "switch": 1.15, "saturn": 1.1, "wiiu": 1.05,
+};
+const NO_LOGO = new Set(["gba", "n64", "3ds", "n3ds", "ps4", "psx"]);
+const NO_LOGO_LABELS = { gba: "GBA", n64: "N64", "3ds": "3DS", n3ds: "3DS", ps4: "PS4", psx: "PS1" };
+
 export function platformCard(platform, active = false) {
   const local = platform.local || {};
   const roms = Number(platform.rom_count) || 0;
+  const mapped = Boolean(local.exists && local.launcher);
+  const slug = String(platform.fs_slug || platform.slug || "").toLowerCase();
+  const normalized = Boolean(platform.logo_normalized);
+  const boost = normalized ? 1 : (LOGO_BOOST[slug] || 1.55);
+  const monogram = NO_LOGO_LABELS[slug] || platform.abbreviation || initials(platform.display_name || platform.name || platform.slug);
   return h("a", {
     class: `plat-card ${active ? "active" : ""}`,
     href: `#/platform/${encodeURIComponent(platform.fs_slug || platform.slug)}`,
+    title: mapped
+      ? `${platform.display_name || platform.name}: ${local.launcher_name || local.launcher}${local.core ? " / " + local.core : ""}`
+      : `${platform.display_name || platform.name}: no EmuDeck folder or launcher mapped`,
   },
-    h("div", { class: "plat-icon" }, platform.logo_url
-      ? h("img", { src: platform.logo_url, alt: "", loading: "lazy" })
-      : initials(platform.display_name || platform.name || platform.slug)),
-    h("div", null,
-      h("div", { class: "plat-name" }, platform.display_name || platform.name || platform.fs_slug),
-      h("div", { class: "plat-sub" },
-        h("span", null, `${roms} game${roms === 1 ? "" : "s"}`),
-        local.installed_count ? h("span", { class: "local" }, `${local.installed_count} local`) : null,
+    h("div", { class: "plat-art" },
+      platform.logo_url && !NO_LOGO.has(slug)
+        ? h("img", {
+            src: platform.logo_url,
+            alt: "",
+            loading: "lazy",
+            style: {
+              mixBlendMode: normalized ? "normal" : "screen",
+              filter: normalized
+                ? "drop-shadow(0 5px 12px rgba(0,0,0,.45))"
+                : `brightness(${boost}) saturate(1.12) drop-shadow(0 5px 12px rgba(0,0,0,.45))`,
+            },
+          })
+        : h("span", { class: "plat-initials" }, monogram),
+    ),
+    h("div", { class: "plat-info" },
+      h("div", null,
+        h("div", { class: "plat-name" }, platform.display_name || platform.name || platform.fs_slug),
+        h("div", { class: "plat-sub" },
+          h("span", null, `${roms} game${roms === 1 ? "" : "s"}`),
+          local.installed_count ? h("span", { class: "local" }, `${local.installed_count} local`) : null,
+          h("span", { class: `plat-state ${mapped ? "ok" : "warn"}`, title: mapped ? "Mapped in EmuDeck" : "No EmuDeck mapping" }),
+        ),
       ),
+      h("span", { class: "plat-go", "aria-hidden": "true" }, icon("arrow")),
     ),
   );
 }
