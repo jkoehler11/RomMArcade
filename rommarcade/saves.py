@@ -24,6 +24,7 @@ import os
 import socket
 import sys
 import threading
+import urllib.parse
 import time
 import zipfile
 from dataclasses import dataclass, field
@@ -140,9 +141,9 @@ def _size_of(path: str) -> int:
         return 0
 
 
-def _slot_for_extension(extension: str) -> str:
+def _slot_for_extension(extension: str, slot: str = SLOT) -> str:
     cleaned = "".join(ch for ch in extension.lower().lstrip(".") if ch.isalnum() or ch in "-_")
-    return SIDECAR_PREFIX + (cleaned or "extra")
+    return f"{slot}-{cleaned or 'extra'}"
 
 
 def rom_stem(rom: dict[str, Any]) -> str:
@@ -156,7 +157,7 @@ def save_root(emulation_root: str, platform_dir: str) -> str:
     return os.path.join(emulation_root, "saves", platform_dir)
 
 
-def local_saves(root: str, stem: str) -> list[LocalSave]:
+def local_saves(root: str, stem: str, slot: str = SLOT) -> list[LocalSave]:
     """Every save belonging to one game in EmuDeck's saves folder.
 
     Only immediate children named after the ROM are taken: memory cards and
@@ -171,7 +172,7 @@ def local_saves(root: str, stem: str) -> list[LocalSave]:
             continue
         path = os.path.join(root, name)
         if os.path.isdir(path):
-            folders.append(LocalSave(path=path, name=name, slot=SLOT, is_dir=True,
+            folders.append(LocalSave(path=path, name=name, slot=slot, is_dir=True,
                                      size=_size_of(path), mtime=_newest_mtime(path),
                                      hash=folder_hash(path)))
         elif os.path.isfile(path):
@@ -188,10 +189,10 @@ def local_saves(root: str, stem: str) -> list[LocalSave]:
         for extra in files:
             if extra is main:
                 continue
-            extra.slot = _slot_for_extension(os.path.splitext(extra.name)[1])
+            extra.slot = _slot_for_extension(os.path.splitext(extra.name)[1], slot)
             out.append(extra)
     if main is not None:
-        main.slot = SLOT
+        main.slot = slot
         out.insert(0, main)
     for save in out:
         save.extra["mtime_iso"] = datetime.fromtimestamp(save.mtime, timezone.utc).isoformat()
@@ -204,7 +205,7 @@ class SyncState:
     def __init__(self, path: str | None = None):
         self._path = path or os.path.join(data_dir(), "save-sync.json")
         self._lock = threading.RLock()
-        self._data: dict[str, Any] = {"version": 1, "saves": {}}
+        self._data: dict[str, Any] = {"version": 1, "saves": {}, "slots": {}}
         self._load()
 
     def _load(self) -> None:
@@ -212,7 +213,11 @@ class SyncState:
             with open(self._path, "r", encoding="utf-8") as handle:
                 data = json.load(handle)
             if isinstance(data, dict) and isinstance(data.get("saves"), dict):
-                self._data = {"version": 1, "saves": data["saves"]}
+                self._data = {
+                    "version": 1,
+                    "saves": data["saves"],
+                    "slots": data.get("slots") if isinstance(data.get("slots"), dict) else {},
+                }
         except (OSError, json.JSONDecodeError):
             pass
 
@@ -238,6 +243,18 @@ class SyncState:
         with self._lock:
             if self._data["saves"].pop(key, None) is not None:
                 self._save()
+
+    def slot_for(self, key: str) -> str:
+        with self._lock:
+            return str(self._data["slots"].get(key) or "")
+
+    def set_slot(self, key: str, slot: str) -> None:
+        with self._lock:
+            if slot:
+                self._data["slots"][key] = slot
+            else:
+                self._data["slots"].pop(key, None)
+            self._save()
 
 
 class SaveSyncService:
@@ -357,9 +374,11 @@ class SaveSyncService:
         if not root or not stem:
             summary["reason"] = "No save folder is known for this platform."
             return summary
+        active_slot = self.active_slot(server_key, int(rom["id"]))
+        summary["slot"] = active_slot
         with self._lock:
             try:
-                saves = local_saves(root, stem)
+                saves = local_saves(root, stem, active_slot)
                 summary["root"] = root
                 try:
                     identity = self.identity(client, server)
@@ -389,7 +408,7 @@ class SaveSyncService:
                     if int(op.get("rom_id") or 0) == int(rom["id"])
                 ]
                 os.makedirs(root, exist_ok=True)
-                plan = self._plan(saves, operations, server_key, int(rom["id"]))
+                plan = self._plan(saves, operations, server_key, int(rom["id"]), active_slot)
                 downloads = [item for item in plan if item["do"] == "download"]
                 uploads = [item for item in plan if item["do"] == "upload"]
                 conflicts = [item for item in plan if item["do"] == "conflict"]
@@ -479,6 +498,7 @@ class SaveSyncService:
         stem = rom_stem(rom)
         if not root or not stem:
             return summary
+        active_slot = self.active_slot(server_key, int(rom["id"]))
         with self._lock:
             try:
                 try:
@@ -488,7 +508,7 @@ class SaveSyncService:
                     summary["status"] = "unsupported"
                     return summary
                 summary["device"] = identity.get("device_id") or "token"
-                for save in local_saves(root, stem):
+                for save in local_saves(root, stem, active_slot):
                     item = {"do": "upload", "slot": save.slot, "local": save, "reason": "played"}
                     try:
                         self._upload(client, server_key, int(rom["id"]), item, identity, mapping, overwrite=True)
@@ -507,6 +527,216 @@ class SaveSyncService:
                 self.log(f"save sync: post-play sync for rom {rom.get('id')} failed: {exc}")
             self._last = summary
             return summary
+
+    # -- management -------------------------------------------------------
+    def active_slot(self, server_key: str, rom_id: int) -> str:
+        slot = self.state.slot_for(f"{server_key}|{rom_id}")
+        return slot or SLOT
+
+    def set_active_slot(self, server: dict[str, Any] | None, rom_id: int, slot: str) -> str:
+        cleaned = _clean_slot(slot)
+        if not cleaned:
+            raise SaveSyncError("A sync slot needs a name made of letters, digits, dots, dashes or underscores.",
+                                {"status": "error"})
+        self.state.set_slot(f"{self._server_key(server)}|{int(rom_id)}", cleaned)
+        self.log(f"save sync: rom {rom_id} syncs slot {cleaned}")
+        return cleaned
+
+    def saves_for(self, rom: dict[str, Any], mapping: dict[str, Any],
+                  emulation_root: str, client, server: dict[str, Any] | None) -> dict[str, Any]:
+        """Server saves (every version), local saves and the active slot."""
+        settings = self.settings()
+        server_key = self._server_key(server)
+        rom_id = int(rom["id"])
+        slot = self.active_slot(server_key, rom_id)
+        root = save_root(emulation_root, str(mapping.get("dir") or mapping.get("platform") or ""))
+        stem = rom_stem(rom)
+        out: dict[str, Any] = {
+            "rom_id": rom_id,
+            "slot": slot,
+            "supported": True,
+            "sync": self.snapshot(),
+            "server": [],
+            "slots": [],
+            "local": [],
+            "playing": "",
+            "root": root,
+        }
+        local = local_saves(root, stem, slot) if root else []
+        main = local[0] if local else None
+        out["playing"] = main.name if main else ""
+        out["local"] = [
+            {
+                "name": save.name,
+                "slot": save.slot,
+                "size": save.size,
+                "mtime": save.extra.get("mtime_iso") or "",
+                "hash": save.hash or "",
+                "dir": save.is_dir,
+                "main": save is main,
+                "path": save.path,
+            }
+            for save in local
+        ]
+        try:
+            identity = self.identity(client, server)
+            out["device"] = identity.get("device_id") or "token"
+            rows = client.saves(rom_id=rom_id) or []
+        except SaveSyncUnsupported:
+            self._unsupported.add(server_key)
+            out["supported"] = False
+            out["reason"] = "This RomM server has no save-sync API."
+            return out
+        except RomMError as exc:
+            if _unsupported_error(exc):
+                self._unsupported.add(server_key)
+                out["supported"] = False
+                out["reason"] = "This RomM server has no save-sync API."
+                return out
+            raise
+        rows = sorted(rows, key=lambda row: str(row.get("updated_at") or ""), reverse=True)
+        newest: dict[str, Any] = {}
+        for row in rows:
+            key = row.get("slot")
+            if key and key not in newest:
+                newest[key] = row.get("id")
+        for row in rows:
+            item = _save_public(row)
+            item["current"] = bool(row.get("slot")) and newest.get(row.get("slot")) == row.get("id")
+            item["matches_local"] = bool(main and main.hash and row.get("content_hash") == main.hash)
+            out["server"].append(item)
+        slots: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            key = str(row.get("slot") or "")
+            entry = slots.setdefault(key, {"slot": row.get("slot"), "count": 0, "latest": None})
+            entry["count"] += 1
+            if entry["latest"] is None:
+                entry["latest"] = row.get("id")
+        out["slots"] = sorted(slots.values(), key=lambda entry: (entry["slot"] is None, entry["slot"] or ""))
+        return out
+
+    def restore_save(self, rom: dict[str, Any], mapping: dict[str, Any], emulation_root: str,
+                     client, server: dict[str, Any] | None, save_id: int) -> dict[str, Any]:
+        """Write one server save here and make it this game's synced save."""
+        server_key = self._server_key(server)
+        rom_id = int(rom["id"])
+        root = save_root(emulation_root, str(mapping.get("dir") or mapping.get("platform") or ""))
+        stem = rom_stem(rom)
+        slot = self.active_slot(server_key, rom_id)
+        if not root or not stem:
+            raise SaveSyncError("No save folder is known for this platform.", {"status": "error"})
+        os.makedirs(root, exist_ok=True)
+        save = client.save(int(save_id)) or {}
+        if int(save.get("rom_id") or 0) != rom_id:
+            raise SaveSyncError("That save belongs to a different game.", {"status": "error"})
+        identity = self.identity(client, server)
+        response = client.open_save_content(
+            int(save_id), device_id=identity.get("device_id") or "", optimistic=False
+        )
+        try:
+            content = response.read(MAX_UPLOAD + 1)
+            content_type = (response.headers.get("Content-Type") or "").lower()
+        finally:
+            response.close()
+        if len(content) > MAX_UPLOAD:
+            raise SaveSyncError("That save is larger than RomMArcade will restore.", {"status": "error"})
+        extension = os.path.splitext(str(save.get("file_name") or ""))[1]
+        backup = ""
+        if content[:4] == b"PK\x03\x04" or "zip" in content_type:
+            target_dir = os.path.join(root, stem)
+            if os.path.isdir(target_dir):
+                backup = _backup_path(target_dir)
+            _extract_zip(content, target_dir)
+            local = LocalSave(path=target_dir, name=os.path.basename(target_dir), slot=slot,
+                              is_dir=True, size=_size_of(target_dir), mtime=_newest_mtime(target_dir),
+                              hash=folder_hash(target_dir))
+        else:
+            if not extension:
+                extension = "." + slot[len(SIDECAR_PREFIX):] if slot.startswith(SIDECAR_PREFIX) else ".srm"
+            target = os.path.join(root, stem + extension)
+            if os.path.exists(target):
+                backup = _backup_path(target)
+            _write_atomic(target, content)
+            try:
+                stamp = _parse_time(save.get("updated_at"))
+                if stamp > 0:
+                    os.utime(target, (stamp, stamp))
+            except OSError:
+                pass
+            local = LocalSave(path=target, name=os.path.basename(target), slot=slot,
+                              size=_size_of(target), mtime=_newest_mtime(target),
+                              hash=_md5_bytes(content))
+        local.extra["mtime_iso"] = datetime.fromtimestamp(local.mtime, timezone.utc).isoformat()
+        # Promote the chosen version into the sync slot, so the next launch on
+        # this machine or another one starts from it instead of the old head.
+        item = {"do": "upload", "slot": slot, "local": local, "reason": "restored"}
+        self._upload(client, server_key, rom_id, item, identity, mapping, overwrite=True)
+        self.state.set_slot(f"{server_key}|{rom_id}", slot)
+        if identity.get("device_id"):
+            try:
+                client.confirm_save_downloaded(int(save_id), identity["device_id"],
+                                                save.get("content_hash"))
+            except RomMError:
+                pass
+        self.log(f"save sync: restored save {save_id} into {local.path}")
+        return {
+            "save_id": int(save_id),
+            "slot": slot,
+            "path": local.path,
+            "bytes": len(content),
+            "backup": backup,
+            "uploaded": item.get("save_id"),
+            "file": local.name,
+        }
+
+    def upload_local(self, rom: dict[str, Any], mapping: dict[str, Any], emulation_root: str,
+                     client, server: dict[str, Any] | None, name: str) -> dict[str, Any]:
+        """Upload one of this machine's saves as the game's synced save."""
+        server_key = self._server_key(server)
+        rom_id = int(rom["id"])
+        root = save_root(emulation_root, str(mapping.get("dir") or mapping.get("platform") or ""))
+        stem = rom_stem(rom)
+        slot = self.active_slot(server_key, rom_id)
+        clean = os.path.basename(str(name or ""))
+        path = os.path.join(root, clean)
+        if not clean or not root or os.path.commonpath([os.path.abspath(root), os.path.abspath(path)]) != os.path.abspath(root):
+            raise SaveSyncError("That save is not in this game's save folder.", {"status": "error"})
+        if not os.path.exists(path):
+            raise SaveSyncError("That save file is no longer on this machine.", {"status": "error"})
+        known = {save.path: save for save in local_saves(root, stem, slot)}
+        local = known.get(path)
+        if local is None:
+            if not matches_rom_stem(clean, stem):
+                raise SaveSyncError("That file does not belong to this game.", {"status": "error"})
+            local = LocalSave(path=path, name=clean, slot=slot, is_dir=os.path.isdir(path),
+                              size=_size_of(path), mtime=_newest_mtime(path),
+                              hash=folder_hash(path) if os.path.isdir(path) else _md5_file(path))
+        identity = self.identity(client, server)
+        item = {"do": "upload", "slot": local.slot, "local": local, "reason": "manual upload"}
+        self._upload(client, server_key, rom_id, item, identity, mapping, overwrite=True)
+        self.state.set_slot(f"{server_key}|{rom_id}", local.slot)
+        return {"slot": local.slot, "file": local.name, "save_id": item.get("save_id"),
+                "bytes": item.get("bytes") or 0}
+
+    def download_save(self, client, save_id: int) -> tuple[bytes, str, str]:
+        """Bytes, media type and file name for one server save."""
+        response = client.open_save_content(int(save_id), optimistic=False)
+        try:
+            data = response.read(MAX_UPLOAD + 1)
+            content_type = response.headers.get("Content-Type") or "application/octet-stream"
+            disposition = response.headers.get("Content-Disposition") or ""
+        finally:
+            response.close()
+        if len(data) > MAX_UPLOAD:
+            raise SaveSyncError("That save is larger than RomMArcade will download.", {"status": "error"})
+        name = ""
+        marker = "filename*=utf-8''"
+        lowered = disposition.lower()
+        if marker in lowered:
+            name = urllib.parse.unquote(disposition[lowered.index(marker) + len(marker):].split(";")[0].strip().strip('"'))
+        elif "filename=" in lowered:
+            name = disposition[lowered.index("filename=") + 9:].split(";")[0].strip().strip('"')
+        return data, content_type, name or f"save-{int(save_id)}.bin"
 
     def watch_exit(self, process, rom: dict[str, Any], mapping: dict[str, Any],
                    emulation_root: str, client, server: dict[str, Any] | None) -> None:
@@ -529,7 +759,7 @@ class SaveSyncService:
 
     # -- planning ---------------------------------------------------------
     def _plan(self, saves: list[LocalSave], operations: list[dict[str, Any]],
-              server_key: str, rom_id: int) -> list[dict[str, Any]]:
+              server_key: str, rom_id: int, active_slot: str = SLOT) -> list[dict[str, Any]]:
         """Decide, per operation, what this launch must do.
 
         RomM decides by timestamps when it has no sync history for a device,
@@ -573,7 +803,7 @@ class SaveSyncService:
                     plan.append({"do": "conflict", "slot": slot, "local": local, "op": op,
                                  "reason": "This machine's save and the server's both changed."})
                     continue
-                if not local and not _slot_is_ours(slot):
+                if not local and not _slot_is_ours(slot, active_slot):
                     plan.append({"do": "skip", "slot": slot, "local": None, "op": op,
                                  "reason": "Another device's slot."})
                     continue
@@ -726,8 +956,8 @@ class SaveSyncService:
         self.log(f"save sync: uploaded {file_name} ({item.get('slot')}) for rom {rom_id}")
 
 
-def _slot_is_ours(slot: str) -> bool:
-    return slot == SLOT or slot.startswith(SIDECAR_PREFIX)
+def _slot_is_ours(slot: str, active: str = SLOT) -> bool:
+    return slot == active or slot.startswith(active + "-")
 
 
 def _client_state(rom: dict[str, Any], save: LocalSave) -> dict[str, Any]:
@@ -752,6 +982,44 @@ def _item_public(item: dict[str, Any]) -> dict[str, Any]:
     if item.get("bytes"):
         out["bytes"] = item["bytes"]
     return out
+
+
+def _clean_slot(slot: str) -> str:
+    cleaned = "".join(ch for ch in str(slot or "").strip() if ch.isalnum() or ch in "._-")
+    return cleaned[:64]
+
+
+def _backup_path(path: str) -> str:
+    import shutil
+
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    backup = path + f".pre-restore-{stamp}"
+    try:
+        if os.path.isdir(path):
+            shutil.copytree(path, backup)
+        else:
+            shutil.copy2(path, backup)
+        return backup
+    except OSError:
+        return ""
+
+
+def _save_public(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row.get("id"),
+        "rom_id": row.get("rom_id"),
+        "file_name": row.get("file_name") or "",
+        "slot": row.get("slot"),
+        "emulator": row.get("emulator") or "",
+        "size": int(row.get("file_size_bytes") or 0),
+        "updated_at": row.get("updated_at") or "",
+        "created_at": row.get("created_at") or "",
+        "content_hash": row.get("content_hash") or "",
+        "favorite": bool(row.get("is_favorite")),
+        "labels": row.get("labels") or [],
+        "public": bool(row.get("is_public")),
+        "missing": bool(row.get("missing_from_fs")),
+    }
 
 
 def _write_atomic(path: str, data: bytes) -> None:

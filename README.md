@@ -47,6 +47,14 @@ RomM server  ──HTTP──▶  RomMArcade  ──files──▶  ~/Emulation/
   [RomMArcade plugin](https://github.com/jkoehler11/rommarcade-plugin).
 - **Uninstall with a choice.** Remove an installed game from EmuDeck's ROM folder, with a checkbox
   to also remove that game's saves and save states from EmuDeck's `saves/` and `states/` folders.
+- **Saves that arrive before the game does.** RomMArcade keeps a game's save in step with RomM
+  around every launch: it pulls the current save before starting the emulator and pushes the save
+  back when the emulator closes. A save that changed here and on the server stops the launch and
+  says so instead of picking a winner.
+- **Saves you can manage, like RomM.** The game page lists every save on the server and every
+  save on this machine. Pick any version and **Use & play** starts the game from it (and makes it
+  the save this machine syncs); favorite, label, rename, make public, download or delete a saved
+  version; upload a local save to RomM; and choose which slot this game syncs on.
 - **Live install progress.** A download tray with per-job progress, speed, cancel, and automatic
   play-after-install when the link asked for it. The install button itself becomes a disabled
   `Installing 42%` button while the job runs, and the separate install-only action disappears.
@@ -210,14 +218,38 @@ game page says so, Play is disabled rather than failing, and card buttons instal
 switches the app back to EmuDeck's folders; a configured game folder takes precedence over
 auto-detection, so the choice is always explicit.
 
-**What RomMArcade does not do (yet):** save/state sync, Steam shortcut creation, ROM patching,
+**What RomMArcade does not do (yet):** save-state sync, Steam shortcut creation, ROM patching,
 and multi-disc conversion. Those remain EmuDeck/RomM's business; this app deliberately keeps its
 hands off files it did not create.
+
+## Saves
+
+RomMArcade syncs a game's battery save with RomM around every launch, using RomM's own save slots
+(an `autosave` slot plus `autosave-<ext>` sidecars such as a `.rtc` clock file), so it pairs with
+other RomM clients instead of inventing its own storage.
+
+- **Before a launch** the app negotiates with the server: saves the server has and this machine
+  does not are pulled into EmuDeck's `saves/<system>` folder first, local progress is uploaded,
+  and only then does the emulator start. If a save cannot be restored, or changed on both sides,
+  the launch stops with an explanation — the emulator never opens on a save older than the
+  server's.
+- **After the emulator exits** the save it wrote is pushed to RomM.
+- **The game page's Saves panel** lists every version on RomM and every file on this machine.
+  **Use & play** restores a chosen version here, promotes it to this game's sync slot and starts
+  the game; **Use** does the same without launching. A row can also be favorited, labelled,
+  renamed, made public, downloaded as a file, or deleted. Local files can be uploaded, and the
+  **Sync slot** control picks the slot this game pairs on.
+- Settings live under `save_sync` in `config.json`: `enabled`, `play_gate` (set it to `false` to
+  launch even when saving fails), and `conflicts` (`block` by default; `local`, `server` or
+  `newest` choose a side automatically). A server that has no save-sync API is detected and the
+  app plays normally.
+
+Save-state (`states/`) sync is not covered; only battery saves.
 
 ## Development
 
 ```bash
-python3 -m unittest tests.test_integration -v   # 31 tests, no network
+python3 -m unittest tests.test_integration -v   # 38 tests, no network
 ROMARCADE_HOME=/tmp/rommarcade-dev python3 -m rommarcade serve --port 8791
 ```
 

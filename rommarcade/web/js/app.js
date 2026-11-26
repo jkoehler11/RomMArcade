@@ -463,7 +463,10 @@ function banner({ tone = "warn", title, text, action }) {
 // ----------------------------------------------------------------- game ---
 async function renderGame(id, token) {
   viewEl.replaceChildren(h("div", { class: "skel card", style: { height: "360px" } }));
-  const [detail, installs, platforms] = await Promise.all([api.rom(id), getInstalls(), getPlatforms()]);
+  const [detail, installs, platforms, saves] = await Promise.all([
+    api.rom(id), getInstalls(), getPlatforms(),
+    api.romSaves(id).catch(() => null),
+  ]);
   if (token !== state.renderToken) return;
   const rom = detail.rom;
   const platform = platforms.find((p) => p.id === rom.platform_id);
@@ -583,6 +586,7 @@ async function renderGame(id, token) {
         : null,
       rom.summary ? h("p", { class: "game-summary" }, rom.summary) : null,
       facts,
+      savesSection(rom, saves),
       (rom.files || []).length ? fileListSection(rom.files) : null,
     ),
   );
@@ -607,6 +611,270 @@ function fact(key, value, tone = "", mono = false, wide = false) {
 }
 
 const FILE_PREVIEW = 6;
+
+// --------------------------------------------------------------- saves ---
+const SAVE_PREVIEW = 8;
+
+function refreshSavesViews() {
+  document.querySelectorAll("[data-saves]").forEach((node) => node.__refresh?.());
+}
+
+function savesSection(rom, initial) {
+  const wrap = h("div", { class: "saves-section", "data-saves": String(rom.id) });
+  let data = initial;
+  let expanded = false;
+
+  const refresh = async () => {
+    try {
+      data = await api.romSaves(rom.id);
+      draw();
+    } catch (error) {
+      toast(error.message, "bad");
+    }
+  };
+  wrap.__refresh = refresh;
+
+  const act = async (button, run, message) => {
+    if (button) {
+      button.disabled = true;
+      button.classList.add("busy");
+    }
+    try {
+      await run();
+      if (message) toast(message, "good");
+      await refresh();
+    } catch (error) {
+      toast(error.message, "bad");
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.classList.remove("busy");
+      }
+    }
+  };
+
+  function openRename(save) {
+    const input = h("input", { class: "input", type: "text", value: save.file_name, maxlength: "450" });
+    const saveButton = h("button", { class: "btn primary" }, "Rename");
+    saveButton.addEventListener("click", async () => {
+      const name = input.value.trim();
+      if (!name) return;
+      saveButton.disabled = true;
+      try {
+        await api.renameSave(save.id, name);
+        closeModal();
+        toast("Save renamed", "good");
+        await refresh();
+      } catch (error) {
+        saveButton.disabled = false;
+        toast(error.message, "bad");
+      }
+    });
+    openModal(h("div", { class: "sheet" },
+      h("h2", null, "Rename this save"),
+      h("p", null, "Only the name RomM stores changes; the save itself stays as it is."),
+      input,
+      h("div", { class: "row end" },
+        h("button", { class: "btn ghost", onClick: closeModal }, "Cancel"),
+        saveButton,
+      ),
+    ));
+    input.focus();
+    input.select();
+  }
+
+  function openLabels(save) {
+    const input = h("input", { class: "input", type: "text", value: (save.labels || []).join(", "), placeholder: "before-boss, ending" });
+    const saveButton = h("button", { class: "btn primary" }, "Save labels");
+    saveButton.addEventListener("click", async () => {
+      saveButton.disabled = true;
+      try {
+        const labels = input.value.split(",").map((label) => label.trim()).filter(Boolean);
+        await api.saveLabels(save.id, labels);
+        closeModal();
+        await refresh();
+      } catch (error) {
+        saveButton.disabled = false;
+        toast(error.message, "bad");
+      }
+    });
+    openModal(h("div", { class: "sheet" },
+      h("h2", null, "Labels for this save"),
+      h("p", null, "Comma-separated, so a save can say what it is for."),
+      input,
+      h("div", { class: "row end" },
+        h("button", { class: "btn ghost", onClick: closeModal }, "Cancel"),
+        saveButton,
+      ),
+    ));
+    input.focus();
+  }
+
+  function openDelete(save) {
+    const confirm = h("button", { class: "btn danger" }, icon("trash"), "Delete save");
+    confirm.addEventListener("click", async () => {
+      confirm.disabled = true;
+      try {
+        await api.deleteSave(save.id);
+        closeModal();
+        toast("Save deleted from RomM", "good");
+        await refresh();
+      } catch (error) {
+        confirm.disabled = false;
+        toast(error.message, "bad");
+      }
+    });
+    openModal(h("div", { class: "sheet" },
+      h("h2", null, "Delete this save?"),
+      h("p", null, `${save.file_name} is removed from RomM. Other versions in the slot stay, and the save on this machine is not touched.`),
+      h("div", { class: "row end" },
+        h("button", { class: "btn ghost", onClick: closeModal }, "Cancel"),
+        confirm,
+      ),
+    ));
+  }
+
+  function serverRow(save) {
+    const chips = h("span", { class: "chips" },
+      h("span", { class: "chip" }, save.slot || "archive"),
+      save.current ? h("span", { class: "chip ok" }, "current") : null,
+      save.matches_local ? h("span", { class: "chip" }, "here") : null,
+      save.public ? h("span", { class: "chip" }, "public") : null,
+      ...(save.labels || []).map((label) => h("span", { class: "chip" }, label)),
+    );
+    const actions = h("span", { class: "acts" });
+    if (rom.installed) {
+      actions.append(h("button", {
+        class: "btn small primary",
+        title: "Restore this save here, make it the synced save, and launch the game",
+        onClick: (event) => act(event.currentTarget, () => api.restoreSave(rom.id, save.id, true), `Playing with ${save.file_name}`),
+      }, icon("play"), "Use & play"));
+    }
+    actions.append(
+      h("button", {
+        class: "btn small",
+        title: "Restore this save here and sync from it, without launching",
+        onClick: (event) => act(event.currentTarget, () => api.restoreSave(rom.id, save.id, false), `This machine now uses ${save.file_name}`),
+      }, icon("download"), "Use"),
+      h("a", { class: "icon-btn", href: `/api/saves/${save.id}/download`, title: "Download to this computer" }, icon("download")),
+      h("button", {
+        class: `icon-btn star ${save.favorite ? "on" : ""}`,
+        title: save.favorite ? "Remove from favourites" : "Add to favourites",
+        onClick: (event) => act(event.currentTarget, () => api.saveFavorite(save.id, !save.favorite), save.favorite ? "Removed from favourites" : "Added to favourites"),
+      }, icon("star")),
+      h("button", { class: "icon-btn", title: "Rename", onClick: () => openRename(save) }, icon("pencil")),
+      h("button", { class: "icon-btn", title: "Labels", onClick: () => openLabels(save) }, icon("server")),
+      h("button", {
+        class: "icon-btn",
+        title: save.public ? "Make private" : "Make public",
+        onClick: (event) => act(event.currentTarget, () => api.saveVisibility(save.id, !save.public), save.public ? "Save is private" : "Save is public"),
+      }, icon("external")),
+      h("button", { class: "icon-btn danger", title: "Delete from RomM", onClick: () => openDelete(save) }, icon("trash")),
+    );
+    return h("div", { class: `save-row ${save.favorite ? "fav" : ""} ${save.current ? "current" : ""}` },
+      h("div", { class: "save-main" },
+        h("div", { class: "save-title" },
+          h("span", { class: "n mono", title: save.file_name }, save.file_name),
+          chips,
+        ),
+        h("div", { class: "save-meta" },
+          h("span", null, save.emulator || "unknown emulator"),
+          h("span", null, fmtBytes(save.size)),
+          h("span", { title: save.updated_at || "" }, save.updated_at ? timeAgo(save.updated_at) : ""),
+        ),
+      ),
+      actions,
+    );
+  }
+
+  function draw() {
+    if (!data) {
+      mount(wrap,
+        h("div", { class: "section-title" }, "Saves"),
+        h("p", { class: "note" }, "Saves could not be loaded from RomM."));
+      return;
+    }
+    const header = h("div", { class: "saves-head" },
+      h("div", { class: "section-title" }, "Saves"),
+      data.supported === false
+        ? h("span", { class: "chip" }, "Sync off")
+        : data.sync?.enabled === false
+          ? h("span", { class: "chip" }, "Sync off")
+          : h("span", { class: "chip ok" }, icon("check"), "Sync on"),
+    );
+    if (data.supported === false) {
+      mount(wrap, header,
+        h("p", { class: "note" }, data.reason || "This RomM server does not offer save sync."));
+      return;
+    }
+    const slots = new Set(["autosave", data.slot, ...(data.slots || []).map((entry) => entry.slot).filter(Boolean)]);
+    const slotSelect = h("select", { class: "select save-slot", title: "The slot this game syncs on this machine" },
+      [...slots].sort().map((slot) => h("option", { value: slot, selected: slot === data.slot }, slot)),
+    );
+    slotSelect.addEventListener("change", async () => {
+      slotSelect.disabled = true;
+      try {
+        data = await api.setSaveSlot(rom.id, slotSelect.value);
+        toast(`Now syncing slot ${slotSelect.value}`, "good");
+        draw();
+      } catch (error) {
+        toast(error.message, "bad");
+      } finally {
+        slotSelect.disabled = false;
+      }
+    });
+    const local = data.local || [];
+    const localBlock = local.length
+      ? h("div", { class: "save-list" }, local.map((save) => h("div", { class: "save-row local" },
+          h("div", { class: "save-main" },
+            h("div", { class: "save-title" },
+              h("span", { class: "n mono", title: save.path }, save.name),
+              h("span", { class: "chips" },
+                save.main ? h("span", { class: "chip ok" }, "playing") : h("span", { class: "chip" }, save.slot),
+                save.dir ? h("span", { class: "chip" }, "folder") : null,
+              ),
+            ),
+            h("div", { class: "save-meta" },
+              h("span", null, fmtBytes(save.size)),
+              h("span", null, save.mtime ? timeAgo(save.mtime) : ""),
+            ),
+          ),
+          h("span", { class: "acts" },
+            h("button", {
+              class: "btn small",
+              title: "Upload this file to RomM and sync from it",
+              onClick: (event) => act(event.currentTarget, () => api.uploadLocalSave(rom.id, save.name), `Uploaded ${save.name}`),
+            }, icon("upload"), "Upload"),
+          ),
+        )))
+      : h("p", { class: "note" }, "No save for this game on this machine yet.");
+    const rows = data.server || [];
+    const shown = expanded ? rows : rows.slice(0, SAVE_PREVIEW);
+    const serverBlock = rows.length
+      ? h("div", { class: "save-list" }, shown.map(serverRow))
+      : h("p", { class: "note" }, "No saves for this game on RomM yet. Play it, or upload the save from this machine.");
+    mount(wrap,
+      header,
+      h("p", { class: "note" }, "Saves are pulled before the game starts and pushed when the emulator closes. Pick any version to make it the one this machine plays and syncs."),
+      h("div", { class: "save-slot-row" },
+        h("span", { class: "k" }, "Sync slot"),
+        slotSelect,
+        h("span", { class: "note" }, data.device && data.device !== "token" ? `device ${String(data.device).slice(0, 8)}` : "this machine's token device"),
+      ),
+      h("div", { class: "section-title small" }, "On this machine"),
+      localBlock,
+      h("div", { class: "section-title small" }, "On RomM"),
+      serverBlock,
+      rows.length > SAVE_PREVIEW
+        ? h("button", { class: "btn small ghost file-more", onClick: () => { expanded = !expanded; draw(); } },
+            expanded ? `Show first ${SAVE_PREVIEW}` : `Show all ${rows.length} saves`)
+        : null,
+    );
+  }
+
+  draw();
+  return wrap;
+}
 
 function fileListSection(files) {
   const wrap = h("div");
@@ -835,6 +1103,7 @@ async function playRom(romId) {
       ? ` · ${pulled} save${pulled === 1 ? "" : "s"} synced`
       : pushed ? ` · ${pushed} save${pushed === 1 ? "" : "s"} uploaded` : "";
     toast(`Launching ${result.launcher || "the emulator"}${result.core ? " (" + result.core + ")" : ""}${note}`, "good");
+    refreshSavesViews();
   } catch (error) {
     if (error.payload?.save_conflict || error.payload?.save_sync) {
       openSyncProblem(romId, error);

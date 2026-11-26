@@ -285,6 +285,41 @@ class RomMClient:
         except (UnicodeDecodeError, json.JSONDecodeError):
             raise RomMError("The server answered a save upload with something that was not JSON.") from None
 
+    def saves(self, rom_id: int | None = None, **params: Any) -> list[dict[str, Any]]:
+        query: dict[str, Any] = dict(params)
+        if rom_id is not None:
+            query["rom_id"] = int(rom_id)
+        data = self.json("GET", "/api/saves", query or None)
+        if isinstance(data, dict):
+            data = data.get("items") or data.get("saves") or []
+        return data if isinstance(data, list) else []
+
+    def save(self, save_id: int) -> dict[str, Any]:
+        return self.json("GET", f"/api/saves/{int(save_id)}") or {}
+
+    def delete_saves(self, save_ids: Iterable[int]) -> Any:
+        return self.json("POST", "/api/saves/delete", body={"saves": [int(i) for i in save_ids]})
+
+    def update_save_favorite(self, save_id: int, is_favorite: bool) -> dict[str, Any]:
+        return self.json(
+            "PUT", f"/api/saves/{int(save_id)}/favorite", body={"is_favorite": bool(is_favorite)}
+        ) or {}
+
+    def update_save_labels(self, save_id: int, labels: Iterable[str]) -> dict[str, Any]:
+        return self.json(
+            "PUT", f"/api/saves/{int(save_id)}/labels", body={"labels": list(labels)}
+        ) or {}
+
+    def update_save_visibility(self, save_id: int, is_public: bool) -> dict[str, Any]:
+        return self.json(
+            "PUT", f"/api/saves/{int(save_id)}/visibility", body={"is_public": bool(is_public)}
+        ) or {}
+
+    def rename_save(self, save_id: int, file_name: str) -> dict[str, Any]:
+        return self.json(
+            "PUT", f"/api/saves/{int(save_id)}/file-name", body={"file_name": str(file_name)}
+        ) or {}
+
     # -- convenience ------------------------------------------------------
     def probe(self) -> dict[str, Any]:
         heartbeat = self.heartbeat()

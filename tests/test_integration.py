@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -40,6 +41,7 @@ from rommarcade.emudeck import (
     sanitize_name,
 )
 from rommarcade.romm import RomMClient
+from rommarcade.saves import SyncState
 from rommarcade.server import App, Server, Handler, _is_game_rom
 
 TOKEN = "rmm_testtoken"
@@ -49,6 +51,42 @@ PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
 class FakeRomM(BaseHTTPRequestHandler):
     server_version = "FakeRomM/5.4"
     approved = False
+    # Save-sync simulation: absent (no API), download, upload, conflict, noop.
+    save_mode = "absent"
+    save_bytes = b"SAVE-FROM-SERVER"
+    uploaded = []
+    confirmed = []
+    deleted = []
+    flags = []
+
+    @classmethod
+    def reset_saves(cls, mode="download"):
+        cls.save_mode = mode
+        cls.save_bytes = b"SAVE-FROM-SERVER"
+        cls.uploaded = []
+        cls.confirmed = []
+        cls.deleted = []
+        cls.flags = []
+
+    @classmethod
+    def save_row(cls, **overrides):
+        row = {
+            "id": 900,
+            "rom_id": 180,
+            "file_name": "1942 (Japan, USA) [2026-11-26_12-00-00-000].srm",
+            "slot": "autosave",
+            "emulator": "mesen",
+            "file_size_bytes": len(cls.save_bytes),
+            "content_hash": hashlib.md5(cls.save_bytes, usedforsecurity=False).hexdigest(),
+            "updated_at": "2026-11-26T12:00:00+00:00",
+            "created_at": "2026-11-26T11:00:00+00:00",
+            "is_favorite": False,
+            "labels": [],
+            "is_public": False,
+            "missing_from_fs": False,
+        }
+        row.update(overrides)
+        return row
 
     def log_message(self, *args):  # quiet
         pass
@@ -125,13 +163,98 @@ class FakeRomM(BaseHTTPRequestHandler):
                 bundle.writestr("Game [0100].nsp", b"first")
                 bundle.writestr("Game [0101].nsp", b"second")
             return self._bytes(200, buffer.getvalue(), "application/zip", "Game.nsp.zip")
+        if path == "/api/saves":
+            if query.get("rom_id") and query["rom_id"][0] != "180":
+                return self._json(200, [])
+            rows = [self.save_row()] if self.save_mode != "absent" else []
+            for entry in reversed(self.uploaded):
+                rows.insert(0, entry["row"])
+            return self._json(200, rows)
+        if path == "/api/saves/900":
+            return self._json(200, self.save_row())
+        if path.startswith("/api/saves/900/content"):
+            return self._bytes(200, self.save_bytes, "application/octet-stream",
+                               "1942 (Japan, USA) [tagged].srm")
+        if path.startswith("/api/saves/901/content"):
+            entry = next((e for e in self.uploaded if e["row"]["id"] == 901), None)
+            if not entry:
+                return self._json(404, {"detail": "no such save"})
+            return self._bytes(200, entry["data"], "application/octet-stream", entry["name"])
         return self._json(404, {"detail": "no such endpoint " + path})
 
     def do_POST(self):
         parsed = urllib.parse.urlsplit(self.path)
         path = parsed.path
+        query = urllib.parse.parse_qs(parsed.query)
         length = int(self.headers.get("Content-Length") or 0)
-        body = json.loads(self.rfile.read(length) or b"{}")
+        raw = self.rfile.read(length) if length else b""
+        content_type = self.headers.get("Content-Type") or ""
+        if "multipart/form-data" in content_type:
+            body = {}
+            boundary = content_type.split("boundary=", 1)[-1].encode()
+            marker = b"\r\n\r\n"
+            head, _, rest = raw.partition(marker)
+            data = rest.split(b"\r\n--" + boundary, 1)[0] if rest else b""
+            name = ""
+            for part in head.split(b";"):
+                if b"filename=" in part:
+                    name = part.split(b"filename=", 1)[1].decode("utf-8", "replace").strip().strip('"')
+            raw = (name, data)
+        else:
+            body = json.loads(raw or b"{}")
+        if path == "/api/sync/negotiate":
+            if self.save_mode == "absent":
+                return self._json(404, {"detail": "no such endpoint " + path})
+            saves = body.get("saves") or []
+            match = next((s for s in saves if s.get("slot") == "autosave"), None)
+            server_hash = hashlib.md5(self.save_bytes, usedforsecurity=False).hexdigest()
+            if self.save_mode == "download":
+                operations = [] if match and match.get("content_hash") == server_hash else [{
+                    "action": "download", "rom_id": 180, "save_id": 900,
+                    "file_name": "1942 (Japan, USA) [tagged].srm", "slot": "autosave",
+                    "emulator": "mesen", "reason": "Server has a newer save",
+                    "server_updated_at": "2026-11-26T12:00:00+00:00",
+                    "server_content_hash": server_hash,
+                }]
+            elif self.save_mode == "conflict":
+                operations = [{
+                    "action": "conflict", "rom_id": 180, "save_id": 900,
+                    "file_name": "1942 (Japan, USA) [tagged].srm", "slot": "autosave",
+                    "emulator": "mesen", "reason": "Changed on both sides",
+                    "server_updated_at": "2026-11-26T12:00:00+00:00",
+                    "server_content_hash": server_hash,
+                }]
+            elif self.save_mode == "upload":
+                operations = [{
+                    "action": "upload", "rom_id": 180, "slot": "autosave",
+                    "file_name": (match or {}).get("file_name") or "1942.srm",
+                    "emulator": "mesen", "reason": "Local save changed",
+                }]
+            else:
+                operations = []
+            return self._json(200, {
+                "session_id": 1, "operations": operations,
+                "total_upload": 0, "total_download": 0, "total_conflict": 0,
+                "total_no_op": 0, "total_delete": 0,
+            })
+        if path == "/api/devices":
+            return self._json(201, {"device_id": "dev-test", "name": "test", "created_at": "now"})
+        if path == "/api/saves":
+            name, data = raw if isinstance(raw, tuple) else ("save.srm", b"")
+            digest = hashlib.md5(data, usedforsecurity=False).hexdigest()
+            row = self.save_row(
+                id=901, file_name=name or "save.srm", slot=(query.get("slot") or ["autosave"])[0],
+                file_size_bytes=len(data), content_hash=digest,
+                is_favorite=False, labels=[], is_public=False,
+            )
+            self.uploaded.append({"row": row, "data": data, "name": name or "save.srm"})
+            return self._json(200, row)
+        if path == "/api/saves/900/downloaded":
+            self.confirmed.append(body)
+            return self._json(200, self.save_row())
+        if path == "/api/saves/delete":
+            self.deleted.extend(body.get("saves") or [])
+            return self._json(200, body.get("saves") or [])
         if path == "/api/auth/device/init":
             return self._json(200, {
                 "device_code": "dev-1",
@@ -148,6 +271,23 @@ class FakeRomM(BaseHTTPRequestHandler):
                 return self._json(400, {"detail": "authorization_pending"})
             return self._json(200, {"id": 1, "access_token": TOKEN, "device_id": "dev", "scopes": ["roms.read"], "expires_at": None})
         return self._json(404, {"detail": "no such endpoint"})
+
+    def do_PUT(self):
+        parsed = urllib.parse.urlsplit(self.path)
+        path = parsed.path
+        length = int(self.headers.get("Content-Length") or 0)
+        body = json.loads(self.rfile.read(length) or b"{}")
+        self.flags.append((path, body))
+        overrides = {}
+        if path.endswith("/favorite"):
+            overrides["is_favorite"] = bool(body.get("is_favorite"))
+        elif path.endswith("/visibility"):
+            overrides["is_public"] = bool(body.get("is_public"))
+        elif path.endswith("/file-name"):
+            overrides["file_name"] = body.get("file_name")
+        elif path.endswith("/labels"):
+            overrides["labels"] = body.get("labels") or []
+        return self._json(200, self.save_row(**overrides))
 
 
 ROM_NES = {
@@ -583,6 +723,177 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(payload["saves_removed"], 0)
         self.assertFalse(os.path.exists(os.path.join(self.emu, "roms/switch/Astral Chain")))
         self.assertTrue(os.path.exists(save_file))
+
+
+class SaveManagementTests(unittest.TestCase):
+    """The saves panel: list versions, choose one to play, manage the slot."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="rommarcade-saves-")
+        cls.fake = ThreadingHTTPServer(("127.0.0.1", 0), FakeRomM)
+        cls.fake_port = cls.fake.server_address[1]
+        threading.Thread(target=cls.fake.serve_forever, daemon=True).start()
+
+        os.environ["ROMARCADE_HOME"] = os.path.join(cls.tmp, "home")
+        os.environ["HOME"] = os.path.join(cls.tmp, "user")
+        os.makedirs(os.path.join(os.environ["HOME"], ".var/app/org.libretro.RetroArch/config/retroarch/cores"), exist_ok=True)
+        open(os.path.join(os.environ["HOME"], ".var/app/org.libretro.RetroArch/config/retroarch/cores/mesen_libretro.so"), "w").close()
+
+        cls.emu = os.path.join(cls.tmp, "Emulation")
+        for sub in ("roms/nes", "saves/nes", "bios", "tools/launchers"):
+            os.makedirs(os.path.join(cls.emu, sub), exist_ok=True)
+        cls.save_dir = os.path.join(cls.emu, "saves/nes")
+        cls.marker = os.path.join(cls.tmp, "launch-save.txt")
+        cls.args_file = os.path.join(cls.tmp, "launcher-args.txt")
+        launcher = os.path.join(cls.emu, "tools/launchers/retroarch.sh")
+        with open(launcher, "w") as handle:
+            handle.write(
+                "#!/bin/sh\n"
+                f"printf '%s\\n' \"$@\" > {cls.args_file}\n"
+                f'cat "{cls.save_dir}/1942 (Japan, USA).srm" > "{cls.marker}" 2>/dev/null || echo missing > "{cls.marker}"\n'
+            )
+        os.chmod(launcher, 0o755)
+
+        cls.store = ConfigStore()
+        cls.store.add_server(f"http://127.0.0.1:{cls.fake_port}", {"mode": "token", "token": TOKEN})
+        cls.store.update({"emudeck": {"root": cls.emu}})
+        server_id = cls.store.active_server()["id"]
+        cls.store.update({"save_sync": {"enabled": True, "play_gate": True,
+                                        "devices": {server_id: {"mode": "explicit", "device_id": "dev-test"}}}})
+        cls.app = App(cls.store)
+        cls.httpd = Server(("127.0.0.1", 0), Handler, cls.app)
+        cls.port = cls.httpd.server_address[1]
+        threading.Thread(target=cls.httpd.serve_forever, daemon=True).start()
+        cls.base = f"http://127.0.0.1:{cls.port}"
+
+        target = os.path.join(cls.emu, "roms/nes/1942 (Japan, USA).zip")
+        with open(target, "wb") as handle:
+            handle.write(b"NES-ROM-DATA")
+        cls.app.state.record_install(ROM_NES, target, 12, "nes")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+        cls.app.downloads.shutdown()
+        cls.fake.shutdown()
+        cls.fake.server_close()
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+        os.environ.pop("ROMARCADE_HOME", None)
+
+    def setUp(self):
+        FakeRomM.reset_saves("download")
+        for name in os.listdir(self.save_dir):
+            path = os.path.join(self.save_dir, name)
+            shutil.rmtree(path, ignore_errors=True) if os.path.isdir(path) else os.unlink(path)
+        self.app.save_sync.state = SyncState()
+        for path in (self.marker, self.args_file):
+            if os.path.exists(path):
+                os.unlink(path)
+
+    def call(self, path, method="GET", body=None):
+        data = json.dumps(body).encode() if body is not None else None
+        request = urllib.request.Request(self.base + path, data=data, method=method,
+                                         headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                return response.status, json.loads(response.read() or b"{}")
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read() or b"{}")
+
+    def wait_for(self, path, timeout=6):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if os.path.exists(path):
+                return True
+            time.sleep(0.05)
+        return False
+
+    def wait_for_content(self, path, expected, timeout=6):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                with open(path, "rb") as handle:
+                    if handle.read() == expected:
+                        return True
+            except OSError:
+                pass
+            time.sleep(0.05)
+        return False
+
+    def test_01_saves_panel_lists_versions(self):
+        status, payload = self.call("/api/roms/180/saves")
+        self.assertEqual(status, 200, payload)
+        self.assertTrue(payload["supported"])
+        self.assertEqual(payload["slot"], "autosave")
+        self.assertEqual(payload["playing"], "")
+        row = next(item for item in payload["server"] if item["id"] == 900)
+        self.assertEqual(row["slot"], "autosave")
+        self.assertTrue(row["current"])
+        self.assertFalse(row["favorite"])
+        self.assertEqual(payload["slots"][0]["slot"], "autosave")
+
+    def test_02_restore_then_play_waits_for_the_save(self):
+        status, payload = self.call("/api/roms/180/saves/restore", "POST", {"save_id": 900, "play": True})
+        self.assertEqual(status, 200, payload)
+        self.assertTrue(payload["play"]["launched"], payload)
+        local = os.path.join(self.save_dir, "1942 (Japan, USA).srm")
+        with open(local, "rb") as handle:
+            self.assertEqual(handle.read(), FakeRomM.save_bytes)
+        self.assertTrue(self.wait_for_content(self.marker, FakeRomM.save_bytes),
+                        "the emulator must start after the save is in place")
+        self.assertTrue(FakeRomM.uploaded, "the chosen save is promoted into the sync slot")
+        self.assertEqual(FakeRomM.uploaded[-1]["row"]["slot"], "autosave")
+        _, panel = self.call("/api/roms/180/saves")
+        self.assertEqual(panel["playing"], "1942 (Japan, USA).srm")
+        self.assertTrue(any(item["matches_local"] for item in panel["server"]))
+
+    def test_03_conflict_stops_the_launch(self):
+        with open(os.path.join(self.save_dir, "1942 (Japan, USA).srm"), "wb") as handle:
+            handle.write(b"LOCAL-DIFFERENT")
+        FakeRomM.reset_saves("conflict")
+        status, payload = self.call("/api/play", "POST", {"rom_id": 180})
+        self.assertEqual(status, 409, payload)
+        self.assertTrue(payload["save_conflict"])
+        time.sleep(0.4)
+        self.assertFalse(os.path.exists(self.args_file), "the emulator must not start on a conflict")
+
+    def test_04_upload_a_local_save(self):
+        with open(os.path.join(self.save_dir, "1942 (Japan, USA).srm"), "wb") as handle:
+            handle.write(b"LOCAL-SAVE")
+        FakeRomM.reset_saves("upload")
+        status, payload = self.call("/api/roms/180/saves/upload", "POST", {"name": "1942 (Japan, USA).srm"})
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(payload["slot"], "autosave")
+        self.assertEqual(FakeRomM.uploaded[-1]["data"], b"LOCAL-SAVE")
+        self.assertEqual(FakeRomM.uploaded[-1]["row"]["slot"], "autosave")
+
+    def test_05_choose_the_sync_slot(self):
+        status, payload = self.call("/api/roms/180/saves/slot", "POST", {"slot": "before-boss"})
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(payload["slot"], "before-boss")
+        with open(os.path.join(self.save_dir, "1942 (Japan, USA).srm"), "wb") as handle:
+            handle.write(b"LOCAL-SAVE")
+        _, panel = self.call("/api/roms/180/saves")
+        main = next(item for item in panel["local"] if item["main"])
+        self.assertEqual(main["slot"], "before-boss")
+
+    def test_06_manage_flags_and_download(self):
+        status, payload = self.call("/api/saves/900/favorite", "POST", {"is_favorite": True})
+        self.assertEqual(status, 200, payload)
+        self.assertTrue(payload["save"]["is_favorite"])
+        status, payload = self.call("/api/saves/900/rename", "POST", {"file_name": "before the boss.srm"})
+        self.assertEqual(payload["save"]["file_name"], "before the boss.srm")
+        status, payload = self.call("/api/saves/900/visibility", "POST", {"is_public": True})
+        self.assertTrue(payload["save"]["is_public"])
+        request = urllib.request.Request(self.base + "/api/saves/900/download")
+        with urllib.request.urlopen(request, timeout=15) as response:
+            self.assertEqual(response.read(), FakeRomM.save_bytes)
+            self.assertIn("attachment", response.headers.get("Content-Disposition", ""))
+        status, payload = self.call("/api/saves/900/delete", "POST", {})
+        self.assertTrue(payload["deleted"])
+        self.assertIn(900, FakeRomM.deleted)
 
 
 class LibraryIntegrationTests(unittest.TestCase):

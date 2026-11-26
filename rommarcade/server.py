@@ -756,6 +756,38 @@ class App:
             sort = _q(query, "sort") or "name"
             return 200, JSON, self.roms(platform, search, limit, offset, sort)
 
+        match = re.fullmatch(r"/api/roms/(\d+)/saves", path)
+        if method == "GET" and match:
+            return 200, JSON, self.rom_saves(int(match.group(1)))
+
+        match = re.fullmatch(r"/api/roms/(\d+)/saves/restore", path)
+        if method == "POST" and match:
+            data = body or {}
+            save_id = int(data.get("save_id") or 0)
+            if save_id <= 0:
+                raise HttpError(400, "A save_id is required.")
+            return 200, JSON, self.restore_rom_save(
+                int(match.group(1)), save_id, bool(data.get("play"))
+            )
+
+        match = re.fullmatch(r"/api/roms/(\d+)/saves/upload", path)
+        if method == "POST" and match:
+            data = body or {}
+            return 200, JSON, self.upload_rom_save(int(match.group(1)), str(data.get("name") or ""))
+
+        match = re.fullmatch(r"/api/roms/(\d+)/saves/slot", path)
+        if method == "POST" and match:
+            data = body or {}
+            return 200, JSON, self.set_rom_save_slot(int(match.group(1)), str(data.get("slot") or ""))
+
+        match = re.fullmatch(r"/api/saves/(\d+)/download", path)
+        if method == "GET" and match:
+            return self.save_download(int(match.group(1)))
+
+        match = re.fullmatch(r"/api/saves/(\d+)/(favorite|rename|visibility|delete|labels)", path)
+        if method == "POST" and match:
+            return 200, JSON, self.update_save(int(match.group(1)), match.group(2), body or {})
+
         match = re.fullmatch(r"/api/roms/(\d+)", path)
         if method == "GET" and match:
             return 200, JSON, {"rom": self.rom_detail(int(match.group(1)))}
@@ -1058,6 +1090,80 @@ class App:
             "user": {"id": me.get("id"), "username": me.get("username"), "role": me.get("role")},
             "scopes": data.get("scopes") or [],
         }
+
+    # -- saves ------------------------------------------------------------
+    def _saves_context(self, rom_id: int) -> tuple[dict[str, Any], dict[str, Any], str]:
+        rom = self.rom_detail(int(rom_id))
+        mapping = rom.get("mapping") or {}
+        emu_root = detect_emudeck(self.config.get()).get("root") or ""
+        return rom, mapping, emu_root
+
+    def rom_saves(self, rom_id: int) -> dict[str, Any]:
+        rom, mapping, emu_root = self._saves_context(rom_id)
+        return self.save_sync.saves_for(rom, mapping, emu_root, self.client(), self.active_server())
+
+    def restore_rom_save(self, rom_id: int, save_id: int, play: bool) -> dict[str, Any]:
+        self.require_emudeck()
+        rom, mapping, emu_root = self._saves_context(rom_id)
+        try:
+            result = self.save_sync.restore_save(
+                rom, mapping, emu_root, self.client(), self.active_server(), save_id
+            )
+        except SaveSyncError as exc:
+            raise HttpError(409, str(exc), save_sync=exc.summary) from None
+        if play:
+            result["play"] = self._play(int(rom_id), False)
+        return result
+
+    def upload_rom_save(self, rom_id: int, name: str) -> dict[str, Any]:
+        self.require_emudeck()
+        rom, mapping, emu_root = self._saves_context(rom_id)
+        try:
+            return self.save_sync.upload_local(
+                rom, mapping, emu_root, self.client(), self.active_server(), name
+            )
+        except SaveSyncError as exc:
+            raise HttpError(409, str(exc), save_sync=exc.summary) from None
+
+    def set_rom_save_slot(self, rom_id: int, slot: str) -> dict[str, Any]:
+        rom, mapping, emu_root = self._saves_context(rom_id)
+        try:
+            self.save_sync.set_active_slot(self.active_server(), int(rom_id), slot)
+        except SaveSyncError as exc:
+            raise HttpError(400, str(exc)) from None
+        return self.save_sync.saves_for(rom, mapping, emu_root, self.client(), self.active_server())
+
+    def save_download(self, save_id: int) -> tuple[int, dict[str, str], bytes]:
+        try:
+            data, content_type, name = self.save_sync.download_save(self.client(), save_id)
+        except SaveSyncError as exc:
+            raise HttpError(409, str(exc)) from None
+        quoted = urllib.parse.quote(name)
+        return 200, {
+            "Content-Type": content_type or "application/octet-stream",
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quoted}",
+            "Cache-Control": "no-store",
+        }, data
+
+    def update_save(self, save_id: int, action: str, body: dict[str, Any]) -> dict[str, Any]:
+        client = self.client()
+        if action == "favorite":
+            save = client.update_save_favorite(save_id, bool(body.get("is_favorite")))
+        elif action == "visibility":
+            save = client.update_save_visibility(save_id, bool(body.get("is_public")))
+        elif action == "labels":
+            labels = [str(label) for label in (body.get("labels") or []) if str(label).strip()]
+            save = client.update_save_labels(save_id, labels)
+        elif action == "rename":
+            name = str(body.get("file_name") or "").strip()
+            if not name:
+                raise HttpError(400, "A file name is required.")
+            save = client.rename_save(save_id, name)
+        else:  # delete
+            client.delete_saves([int(save_id)])
+            self.log(f"deleted RomM save {save_id}")
+            return {"deleted": True, "id": int(save_id)}
+        return {"save": save}
 
     def _play(self, rom_id: int, dry_run: bool) -> dict[str, Any]:
         self.require_emudeck()

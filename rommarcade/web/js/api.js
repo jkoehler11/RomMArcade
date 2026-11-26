@@ -74,6 +74,15 @@ export const api = {
   deeplink: () => request("/api/deeplink"),
   pushDeeplink: (url) => request("/api/deeplink", { method: "POST", body: { url } }),
   history: () => request("/api/history"),
+  romSaves: (id) => request(`/api/roms/${Number(id)}/saves`, { timeout: 60000 }),
+  restoreSave: (romId, saveId, play = false) => request(`/api/roms/${Number(romId)}/saves/restore`, { method: "POST", body: { save_id: Number(saveId), play: Boolean(play) }, timeout: 180000 }),
+  uploadLocalSave: (romId, name) => request(`/api/roms/${Number(romId)}/saves/upload`, { method: "POST", body: { name }, timeout: 120000 }),
+  setSaveSlot: (romId, slot) => request(`/api/roms/${Number(romId)}/saves/slot`, { method: "POST", body: { slot }, timeout: 60000 }),
+  saveFavorite: (id, value) => request(`/api/saves/${Number(id)}/favorite`, { method: "POST", body: { is_favorite: Boolean(value) } }),
+  saveVisibility: (id, value) => request(`/api/saves/${Number(id)}/visibility`, { method: "POST", body: { is_public: Boolean(value) } }),
+  saveLabels: (id, labels) => request(`/api/saves/${Number(id)}/labels`, { method: "POST", body: { labels } }),
+  renameSave: (id, name) => request(`/api/saves/${Number(id)}/rename`, { method: "POST", body: { file_name: name } }),
+  deleteSave: (id) => request(`/api/saves/${Number(id)}/delete`, { method: "POST", body: {} }),
   log: (lines = 200) => request(`/api/log?lines=${lines}`),
 };
 
