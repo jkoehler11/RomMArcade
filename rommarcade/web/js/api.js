@@ -57,6 +57,12 @@ export const api = {
   },
   rom: (id) => request(`/api/roms/${Number(id)}`, { timeout: 60000 }),
   firmware: (platformId) => request(`/api/firmware/${Number(platformId)}`),
+  uploadFirmware: (platformId, fileName, content) => request("/api/firmware/upload", {
+    method: "POST",
+    body: { platform_id: Number(platformId), file_name: fileName, content },
+    timeout: 180000,
+  }),
+  deleteFirmware: (id) => request(`/api/firmware/${Number(id)}/delete`, { method: "POST", body: {} }),
   emudeck: () => request("/api/emudeck", { timeout: 60000 }),
   library: () => request("/api/library", { timeout: 60000 }),
   saveLibrary: (body) => request("/api/library", { method: "POST", body, timeout: 60000 }),

@@ -388,8 +388,8 @@ async function renderPlatform(slug, token) {
       ),
     ),
     h("div", { class: "page-actions" },
-      enabled && Number(platform.firmware_count) > 0 && state.status?.emudeck?.usable
-        ? h("button", { class: "btn", onClick: (event) => downloadBios(platform.id, event.currentTarget) }, icon("download"), "Download BIOS")
+      enabled && state.status?.emudeck?.usable
+        ? h("button", { class: "btn", onClick: () => openBiosManager(platform) }, icon("download"), "BIOS files")
         : null,
       h("select", {
         class: "select",
@@ -509,7 +509,6 @@ async function renderGame(id, token) {
       dataset: { playRom: String(rom.id) },
       onClick: () => playRom(rom.id),
     }, icon("play"), "Play"));
-    actions.push(h("span", { class: "chip ok" }, icon("check"), "Installed"));
     actions.push(h("button", { class: "btn danger", onClick: () => openUninstall(rom) }, icon("trash"), "Uninstall"));
   } else if (mapping.exists && mapping.launcher) {
     if (missingEmulator) {
@@ -581,7 +580,10 @@ async function renderGame(id, token) {
             h("div", { class: "txt" },
               h("b", null, `${launcherName} needs BIOS files`),
               h("div", null, `Missing ${missingEmuBios.join(" and ")} in ${mapping.bios_folder || "the EmuDeck BIOS folder"}. The emulator opens but cannot boot a game until these are present.`)),
-            h("button", { class: "btn small ghost", onClick: () => renderGame(id, state.renderToken) }, icon("refresh"), "Recheck"),
+            h("div", { class: "row" },
+              h("button", { class: "btn small ghost", onClick: () => renderGame(id, state.renderToken) }, icon("refresh"), "Recheck"),
+              platform ? h("button", { class: "btn small", onClick: () => openBiosManager(platform) }, icon("download"), "BIOS files") : null,
+            ),
           )
         : null,
       emuOn && missingBios.length
@@ -1173,6 +1175,90 @@ async function playRom(romId) {
   } finally {
     setPlayBusy(romId, false);
   }
+}
+
+async function openBiosManager(platform) {
+  const platformId = Number(platform.id);
+  const title = platform.display_name || platform.name || platform.fs_slug || "this platform";
+  const list = h("div", { style: { margin: "14px 0" } });
+  const reload = async () => {
+    list.replaceChildren(h("p", { class: "note" }, "Reading RomM…"));
+    try {
+      const data = await api.firmware(platformId);
+      const files = data.firmware || [];
+      if (!files.length) {
+        list.replaceChildren(h("p", { class: "note" }, "RomM has no BIOS files for this platform yet."));
+        return;
+      }
+      list.replaceChildren(...files.map((file) => {
+        const del = h("button", { class: "btn small danger" }, icon("trash"), "Delete");
+        del.addEventListener("click", async () => {
+          if (!window.confirm(`Delete ${file.file_name} from RomM? This removes it from the server's BIOS folder.`)) return;
+          del.disabled = true;
+          try {
+            await api.deleteFirmware(file.id);
+            toast(`${file.file_name} deleted from RomM`, "good");
+            await reload();
+          } catch (error) { del.disabled = false; toast(error.message, "bad"); }
+        });
+        let local;
+        if (file.installed) {
+          local = h("span", { class: "chip ok" }, icon("check"), "On this machine");
+        } else {
+          local = h("button", { class: "btn small" }, icon("download"), "Download");
+          local.addEventListener("click", () => {
+            local.disabled = true;
+            local.replaceChildren("Downloading…");
+            downloadBios(platformId, null);
+          });
+        }
+        return h("div", {
+          class: "row",
+          style: { justifyContent: "space-between", alignItems: "center", gap: "12px", padding: "10px 0", borderTop: "1px solid rgba(255,255,255,.08)" },
+        },
+          h("div", { style: { minWidth: "0" } },
+            h("div", { style: { fontWeight: "600", overflowWrap: "anywhere" } }, file.file_name),
+            h("div", { class: "note" }, `${fmtBytes(Number(file.file_size_bytes) || 0)} · RomM`),
+          ),
+          h("div", { class: "row", style: { flexShrink: "0" } }, local, del),
+        );
+      }));
+    } catch (error) {
+      list.replaceChildren(h("p", { class: "note" }, error.message));
+    }
+  };
+  const input = h("input", { type: "file", multiple: true, style: { flex: "1", minWidth: "0" } });
+  const upload = h("button", { class: "btn primary" }, icon("upload"), "Upload to RomM");
+  upload.addEventListener("click", async () => {
+    const files = Array.from(input.files || []);
+    if (!files.length) { toast("Choose a BIOS file first", "info"); return; }
+    upload.disabled = true;
+    try {
+      for (const file of files) {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        let binary = "";
+        for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+          binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+        }
+        await api.uploadFirmware(platformId, file.name, btoa(binary));
+      }
+      toast(`Uploaded ${files.length} BIOS file${files.length === 1 ? "" : "s"} to RomM`, "good");
+      input.value = "";
+      await reload();
+    } catch (error) { toast(error.message, "bad"); }
+    finally { upload.disabled = false; }
+  });
+  openModal(h("div", { class: "sheet" },
+    h("h2", null, `BIOS files · ${title}`),
+    h("p", { class: "note" },
+      "These files live in RomM. Download copies one to this machine's EmuDeck BIOS folder; upload adds a file to RomM so every device can use it. Upload and delete need the firmware.write scope on your RomM client token."),
+    list,
+    h("div", { class: "row", style: { marginTop: "12px", gap: "10px" } }, input, upload),
+    h("div", { class: "row end", style: { marginTop: "16px" } },
+      h("button", { class: "btn ghost", onClick: closeModal }, "Close"),
+    ),
+  ));
+  reload();
 }
 
 async function downloadBios(platformId, button) {

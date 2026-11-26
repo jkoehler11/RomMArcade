@@ -65,6 +65,8 @@ class FakeRomM(BaseHTTPRequestHandler):
     confirmed = []
     deleted = []
     flags = []
+    firmware_uploads = []
+    firmware_deleted = []
 
     @classmethod
     def reset_saves(cls, mode="download"):
@@ -196,6 +198,7 @@ class FakeRomM(BaseHTTPRequestHandler):
         query = urllib.parse.parse_qs(parsed.query)
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length) if length else b""
+        original_raw = raw
         content_type = self.headers.get("Content-Type") or ""
         if "multipart/form-data" in content_type:
             body = {}
@@ -210,6 +213,12 @@ class FakeRomM(BaseHTTPRequestHandler):
             raw = (name, data)
         else:
             body = json.loads(raw or b"{}")
+        if path == "/api/firmware" and "multipart/form-data" in content_type:
+            self.firmware_uploads.append({"raw": original_raw, "query": query})
+            return self._json(200, {"uploaded": [{"file_name": "bios.bin"}]})
+        if path == "/api/firmware/delete":
+            self.firmware_deleted.append(body)
+            return self._json(200, {"success": True})
         if path == "/api/sync/negotiate":
             if self.save_mode == "absent":
                 return self._json(404, {"detail": "no such endpoint " + path})
@@ -771,6 +780,24 @@ class IntegrationTests(unittest.TestCase):
             time.sleep(0.1)
         self.assertTrue(os.path.exists(target))
         self.assertEqual(open(target, "rb").read(), b"BIOS")
+
+    def test_08b_firmware_upload_and_delete(self):
+        import base64
+        FakeRomM.firmware_uploads = []
+        FakeRomM.firmware_deleted = []
+        content = base64.b64encode(b"BIOSDATA").decode()
+        status, payload = self.call("/api/firmware/upload", "POST", {
+            "platform_id": 13, "file_name": "bios.bin", "content": content,
+        })
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(len(FakeRomM.firmware_uploads), 1)
+        upload = FakeRomM.firmware_uploads[0]
+        self.assertEqual(upload["query"].get("platform_id"), ["13"])
+        self.assertIn(b"BIOSDATA", upload["raw"])
+        self.assertIn(b'filename="bios.bin"', upload["raw"])
+        status, payload = self.call("/api/firmware/900/delete", "POST", {})
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(FakeRomM.firmware_deleted[-1], {"firmware": [900], "delete_from_fs": [900]})
 
     def test_09_deeplink_http(self):
         status, payload = self.call("/api/deeplink", "POST", {"url": "rommarcade://open?rom=180&play=1"})

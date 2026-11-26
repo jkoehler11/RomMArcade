@@ -251,7 +251,7 @@ Save-state (`states/`) sync is not covered; only battery saves.
 ## Development
 
 ```bash
-python3 -m unittest tests.test_integration -v   # 50 tests, no network
+python3 -m unittest tests.test_integration -v   # 51 tests, no network
 ROMARCADE_HOME=/tmp/rommarcade-dev python3 -m rommarcade serve --port 8791
 ```
 

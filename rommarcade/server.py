@@ -17,6 +17,7 @@ import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
+import base64
 import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -604,6 +605,43 @@ class App:
             "offset": offset,
         }
 
+    def upload_firmware(self, body: dict[str, Any]) -> dict[str, Any]:
+        platform_id = int(body.get("platform_id") or 0)
+        file_name = str(body.get("file_name") or "").strip()
+        encoded = body.get("content") or ""
+        if platform_id <= 0 or not file_name or not encoded:
+            raise ConfigError("Choose a BIOS file and a platform to upload it to.")
+        try:
+            content = base64.b64decode(str(encoded), validate=True)
+        except (ValueError, TypeError):
+            raise ConfigError("The BIOS file could not be decoded.")
+        if not content:
+            raise ConfigError("The BIOS file is empty.")
+        if len(content) > 64 * 1024 * 1024:
+            raise ConfigError("That BIOS file is larger than 64 MB.")
+        try:
+            result = self.client().upload_firmware(platform_id, file_name, content)
+        except RomMError as exc:
+            if exc.status == 403:
+                raise ConfigError(
+                    "RomM refused the upload: this client token needs the firmware.write scope. "
+                    "Re-pair the server or create a token with firmware.write in RomM."
+                ) from None
+            raise
+        return {"uploaded": result, "firmware": self.firmware(platform_id)}
+
+    def delete_firmware(self, firmware_id: int) -> dict[str, Any]:
+        try:
+            self.client().delete_firmware(int(firmware_id))
+        except RomMError as exc:
+            if exc.status == 403:
+                raise ConfigError(
+                    "RomM refused the delete: this client token needs the firmware.write scope. "
+                    "Re-pair the server or create a token with firmware.write in RomM."
+                ) from None
+            raise
+        return {"deleted": int(firmware_id)}
+
     def firmware(self, platform_id: int) -> list[dict[str, Any]]:
         try:
             platform = self.resolve_platform(platform_id)
@@ -924,6 +962,13 @@ class App:
                 "total": len(firmware),
                 "skipped": len(firmware) - len(jobs),
             }
+
+        if route == ("POST", "/api/firmware/upload"):
+            return 200, JSON, self.upload_firmware(body or {})
+
+        match = re.fullmatch(r"/api/firmware/(\d+)/delete", path)
+        if method == "POST" and match:
+            return 200, JSON, self.delete_firmware(int(match.group(1)))
 
         match = re.fullmatch(r"/api/firmware/(\d+)", path)
         if method == "GET" and match:
@@ -1403,7 +1448,8 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             length = 0
-        if length > MAX_BODY:
+        limit = 64 * 1024 * 1024 if parsed.path == "/api/firmware/upload" else MAX_BODY
+        if length > limit:
             self._send(413, {"Content-Type": "application/json"}, {"error": "Request body too large."}, head=method == "HEAD")
             return
         if length:

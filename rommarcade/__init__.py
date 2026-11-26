@@ -14,6 +14,7 @@ REQUESTED_SCOPES = [
     "assets.read",
     "assets.write",
     "firmware.read",
+    "firmware.write",
     "devices.read",
     "devices.write",
 ]

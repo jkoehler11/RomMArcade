@@ -190,6 +190,36 @@ class RomMClient:
             data = data.get("items", [])
         return data if isinstance(data, list) else []
 
+    def upload_firmware(self, platform_id: int, file_name: str, content: bytes) -> dict[str, Any]:
+        """Upload one BIOS file to RomM (multipart, replacing a same-named file)."""
+        boundary = "RomMArcade" + uuid.uuid4().hex
+        safe = str(file_name).replace('"', "_").replace("\r", "_").replace("\n", "_")
+        # RomM declares platform_id as a plain int, so FastAPI reads it from the
+        # query string; only the file belongs in the multipart body.
+        head = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="files"; filename="{safe}"\r\n'
+            "Content-Type: application/octet-stream\r\n\r\n"
+        ).encode("utf-8")
+        tail = f"\r\n--{boundary}--\r\n".encode("utf-8")
+        with self._open(
+            "POST",
+            "/api/firmware",
+            {"platform_id": int(platform_id)},
+            data=head + content + tail,
+            content_type=f"multipart/form-data; boundary={boundary}",
+            timeout=180,
+        ) as response:
+            raw = response.read()
+        return json.loads(raw.decode("utf-8")) if raw else {}
+
+    def delete_firmware(self, firmware_id: int) -> dict[str, Any]:
+        return self.json(
+            "POST",
+            "/api/firmware/delete",
+            body={"firmware": [int(firmware_id)], "delete_from_fs": [int(firmware_id)]},
+        ) or {}
+
     def content_path(self, rom_id: int, file_name: str) -> str:
         quoted = urllib.parse.quote(str(file_name), safe="")
         return f"/api/roms/{int(rom_id)}/content/{quoted}"
