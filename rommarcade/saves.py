@@ -551,6 +551,38 @@ class SaveSyncService:
         self.log(f"save sync: rom {rom_id} syncs slot {cleaned}")
         return cleaned
 
+    def create_slot(self, rom: dict[str, Any], mapping: dict[str, Any], emulation_root: str,
+                    client, server: dict[str, Any] | None, slot: str,
+                    seed: bool = True) -> dict[str, Any]:
+        """Make a named sync slot for this game, optionally holding the local save.
+
+        RomM has no empty slot: a slot exists as soon as it holds a version, so
+        seeding copies the save on this machine into it.  Without a local save
+        the slot is remembered here and gets its first version on the next play.
+        """
+        server_key = self._server_key(server)
+        rom_id = int(rom["id"])
+        cleaned = _clean_slot(slot)
+        if not cleaned:
+            raise SaveSyncError(
+                "A slot name needs letters, digits, dots, dashes or underscores.",
+                {"status": "error"},
+            )
+        self.state.set_slot(f"{server_key}|{rom_id}", cleaned)
+        root = save_root(emulation_root, str(mapping.get("dir") or mapping.get("platform") or ""))
+        stem = rom_stem(rom)
+        local = local_saves(root, stem, cleaned) if root and stem else []
+        result: dict[str, Any] = {"slot": cleaned, "seeded": False, "file": ""}
+        if seed and local:
+            identity = self.identity(client, server)
+            item = {"do": "upload", "slot": cleaned, "local": local[0], "reason": "slot created"}
+            self._push(client, server_key, rom_id, item, identity, mapping)
+            result.update({"seeded": True, "file": local[0].name,
+                           "save_id": item.get("save_id")})
+        self.log(f"save sync: rom {rom_id} created slot {cleaned}"
+                 + (" (seeded from this machine)" if result["seeded"] else ""))
+        return result
+
     def saves_for(self, rom: dict[str, Any], mapping: dict[str, Any],
                   emulation_root: str, client, server: dict[str, Any] | None) -> dict[str, Any]:
         """Server saves (every version), local saves and the active slot."""

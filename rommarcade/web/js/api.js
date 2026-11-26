@@ -78,6 +78,7 @@ export const api = {
   restoreSave: (romId, saveId, play = false) => request(`/api/roms/${Number(romId)}/saves/restore`, { method: "POST", body: { save_id: Number(saveId), play: Boolean(play) }, timeout: 180000 }),
   uploadLocalSave: (romId, name) => request(`/api/roms/${Number(romId)}/saves/upload`, { method: "POST", body: { name }, timeout: 120000 }),
   setSaveSlot: (romId, slot) => request(`/api/roms/${Number(romId)}/saves/slot`, { method: "POST", body: { slot }, timeout: 60000 }),
+  createSaveSlot: (romId, slot, seed = true) => request(`/api/roms/${Number(romId)}/saves/slots`, { method: "POST", body: { slot, seed: Boolean(seed) }, timeout: 120000 }),
   saveFavorite: (id, value) => request(`/api/saves/${Number(id)}/favorite`, { method: "POST", body: { is_favorite: Boolean(value) } }),
   saveVisibility: (id, value) => request(`/api/saves/${Number(id)}/visibility`, { method: "POST", body: { is_public: Boolean(value) } }),
   saveLabels: (id, labels) => request(`/api/saves/${Number(id)}/labels`, { method: "POST", body: { labels } }),

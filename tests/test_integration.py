@@ -925,6 +925,34 @@ class SaveManagementTests(unittest.TestCase):
         self.assertEqual(summary.get("skipped"), 1)
         self.assertEqual(FakeRomM.uploaded, [])
 
+    def test_10_create_a_sync_slot_seeds_it(self):
+        with open(os.path.join(self.save_dir, "1942 (Japan, USA).srm"), "wb") as handle:
+            handle.write(b"LOCAL-SAVE")
+        FakeRomM.reset_saves("upload")
+        status, payload = self.call("/api/roms/180/saves/slots", "POST",
+                                    {"slot": "before-boss", "seed": True})
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(payload["slot"], "before-boss")
+        self.assertTrue(payload["created"]["seeded"])
+        self.assertEqual(FakeRomM.uploaded[-1]["row"]["slot"], "before-boss")
+        self.assertEqual(FakeRomM.uploaded[-1]["data"], b"LOCAL-SAVE")
+        self.assertIn("before-boss", [slot["slot"] for slot in payload["slots"]])
+        self.assertEqual([item["name"] for item in payload["local"]],
+                         ["1942 (Japan, USA).srm"])
+
+    def test_11_create_a_slot_without_a_local_save(self):
+        FakeRomM.reset_saves("download")
+        status, payload = self.call("/api/roms/180/saves/slots", "POST",
+                                    {"slot": "no-local", "seed": True})
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(payload["slot"], "no-local")
+        self.assertFalse(payload["created"]["seeded"])
+        self.assertEqual(FakeRomM.uploaded, [])
+
+    def test_12_reject_an_empty_slot_name(self):
+        status, payload = self.call("/api/roms/180/saves/slots", "POST", {"slot": "   "})
+        self.assertEqual(status, 400, payload)
+
     def test_09_local_scan_ignores_our_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:
             for name in ("Game.srm", "Game.srm.pre-restore-20261126-110357",

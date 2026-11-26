@@ -780,6 +780,13 @@ class App:
             data = body or {}
             return 200, JSON, self.set_rom_save_slot(int(match.group(1)), str(data.get("slot") or ""))
 
+        match = re.fullmatch(r"/api/roms/(\d+)/saves/slots", path)
+        if method == "POST" and match:
+            data = body or {}
+            return 200, JSON, self.create_rom_save_slot(
+                int(match.group(1)), str(data.get("slot") or ""), bool(data.get("seed", True))
+            )
+
         match = re.fullmatch(r"/api/saves/(\d+)/download", path)
         if method == "GET" and match:
             return self.save_download(int(match.group(1)))
@@ -1136,6 +1143,20 @@ class App:
         except SaveSyncError as exc:
             raise HttpError(400, str(exc)) from None
         return self.save_sync.saves_for(rom, mapping, emu_root, self.client(), self.active_server())
+
+    def create_rom_save_slot(self, rom_id: int, slot: str, seed: bool = True) -> dict[str, Any]:
+        rom, mapping, emu_root = self._saves_context(rom_id)
+        try:
+            created = self.save_sync.create_slot(
+                rom, mapping, emu_root, self.client(), self.active_server(), slot, seed
+            )
+        except SaveSyncError as exc:
+            raise HttpError(400, str(exc)) from None
+        except RomMError as exc:
+            raise HttpError(409 if exc.status == 409 else 502, str(exc)) from None
+        snapshot = self.save_sync.saves_for(rom, mapping, emu_root, self.client(), self.active_server())
+        snapshot["created"] = created
+        return snapshot
 
     def save_download(self, save_id: int) -> tuple[int, dict[str, str], bytes]:
         try:

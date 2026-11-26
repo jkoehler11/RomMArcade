@@ -237,8 +237,10 @@ other RomM clients instead of inventing its own storage.
 - **The game page's Saves panel** lists every version on RomM and every file on this machine.
   **Use & play** restores a chosen version here, promotes it to this game's sync slot and starts
   the game; **Use** does the same without launching. A row can also be favorited, labelled,
-  renamed, made public, downloaded as a file, or deleted. Local files can be uploaded, and the
-  **Sync slot** control picks the slot this game pairs on.
+  renamed, made public, downloaded as a file, or deleted. Local files can be uploaded; the
+  **Sync slot** control picks the slot this game pairs on, and **New slot** creates a named slot
+  for the game (optionally seeded with the save on this machine) so checkpoints can live side by
+  side.
 - Settings live under `save_sync` in `config.json`: `enabled`, `play_gate` (set it to `false` to
   launch even when saving fails), and `conflicts` (`block` by default; `local`, `server` or
   `newest` choose a side automatically). A server that has no save-sync API is detected and the
@@ -249,7 +251,7 @@ Save-state (`states/`) sync is not covered; only battery saves.
 ## Development
 
 ```bash
-python3 -m unittest tests.test_integration -v   # 41 tests, no network
+python3 -m unittest tests.test_integration -v   # 44 tests, no network
 ROMARCADE_HOME=/tmp/rommarcade-dev python3 -m rommarcade serve --port 8791
 ```
 

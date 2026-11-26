@@ -787,6 +787,46 @@ function savesSection(rom, initial) {
     );
   }
 
+  function openNewSlot() {
+    const input = h("input", { class: "input", type: "text", placeholder: "before-boss", maxlength: "64" });
+    const seed = h("input", { type: "checkbox", checked: true });
+    const create = h("button", { class: "btn primary" }, "Create slot");
+    create.addEventListener("click", async () => {
+      const name = input.value.trim();
+      if (!name) {
+        input.focus();
+        return;
+      }
+      create.disabled = true;
+      try {
+        data = await api.createSaveSlot(rom.id, name, seed.checked);
+        closeModal();
+        const created = data.created || {};
+        toast(created.seeded
+          ? `Slot ${created.slot} now holds this machine's save`
+          : `Slot ${created.slot} is ready for the next save`, "good");
+        draw();
+      } catch (error) {
+        create.disabled = false;
+        toast(error.message, "bad");
+      }
+    });
+    openModal(h("div", { class: "sheet" },
+      h("h2", null, "New sync slot"),
+      h("p", null, "A named history of this game's saves. This machine switches to it, so saves go there instead of the old slot."),
+      input,
+      h("label", { class: "switch", style: { margin: "14px 0" } },
+        seed,
+        h("span", null, "Copy the save on this machine into it"),
+      ),
+      h("div", { class: "row end" },
+        h("button", { class: "btn ghost", onClick: closeModal }, "Cancel"),
+        create,
+      ),
+    ));
+    input.focus();
+  }
+
   function draw() {
     if (!data) {
       mount(wrap,
@@ -859,6 +899,7 @@ function savesSection(rom, initial) {
       h("div", { class: "save-slot-row" },
         h("span", { class: "k" }, "Sync slot"),
         slotSelect,
+        h("button", { class: "btn small", title: "Create a new sync slot for this game", onClick: openNewSlot }, icon("plus"), "New slot"),
         h("span", { class: "note" }, data.device && data.device !== "token" ? `device ${String(data.device).slice(0, 8)}` : "this machine's token device"),
       ),
       h("div", { class: "section-title small" }, "On this machine"),
