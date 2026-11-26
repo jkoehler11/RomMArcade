@@ -537,6 +537,34 @@ async function renderGame(id, token) {
     fact("Files", String((rom.files || []).length)),
   );
 
+  const saveNote = (() => {
+    if (!installed || !saves) return null;
+    if (saves.supported === false) return { text: "Save sync unavailable — this machine's save is used" };
+    if (saves.sync?.enabled === false) return { text: "Save sync is off — this machine's save is used" };
+    const slot = saves.slot || "default";
+    const serverRows = (saves.server || []).filter((row) => (row.slot || null) === slot);
+    const current = serverRows.find((row) => row.current) || serverRows[0];
+    const localRows = saves.local || [];
+    const localMain = localRows.find((row) => row.main) || localRows.find((row) => (row.slot || null) === slot);
+    if (!current && !localMain) return { text: `Save · no “${slot}” save yet — the game starts fresh` };
+    const pick = current || localMain;
+    const where = current && localMain
+      ? (current.matches_local ? "here and in RomM" : "here and in RomM, synced on play")
+      : current ? "in RomM" : "on this machine";
+    const stamp = pick.updated_at || pick.mtime || "";
+    let when = "";
+    if (stamp) {
+      const date = new Date(stamp);
+      if (!Number.isNaN(date.getTime())) {
+        when = " · " + date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+      }
+    }
+    return {
+      text: `Save · ${slot} · ${fmtBytes(Number(pick.size) || 0)}${when} · ${where}`,
+      title: pick.file_name || pick.name || "",
+    };
+  })();
+
   const overviewPanel = h("div", null,
     rom.summary ? h("p", { class: "game-summary" }, rom.summary) : null,
     facts,
@@ -573,29 +601,7 @@ async function renderGame(id, token) {
       dataset: { tab: def.id },
     }, def.node));
   }
-  const body = h("div", null,
-    h("div", { class: "game-hero" },
-      art,
-      h("div", null,
-
-      h("p", { class: "eyebrow" }, rom.platform_name || "Game"),
-      h("h1", { class: "game-title" }, rom.name),
-      h("div", { class: "game-meta" },
-        rom.size ? h("span", { class: "chip" }, fmtBytes(rom.size)) : null,
-        rom.has_multiple_files ? h("span", { class: "chip" }, "Multi-file") : null,
-        installed ? h("span", { class: "chip ok" }, icon("check"), "On this machine") : h("span", { class: "chip" }, "Cloud"),
-        rom.release_year ? h("span", { class: "chip" }, String(rom.release_year)) : null,
-        rom.players ? h("span", { class: "chip" }, rom.players) : null,
-      ),
-      h("div", { class: "game-actions" }, actions),
-      h("div", { class: "play-via" }, icon("cart"),
-        !emuOn
-          ? "EmuDeck integration is off — browsing only"
-          : mapping.launcher
-            ? `Plays through EmuDeck · ${mapping.launcher_name || mapping.launcher}${mapping.core ? " · " + mapping.core : ""}`
-            : libraryMode
-              ? `Installs to ${mapping.path || library.roms_root} · EmuDeck is needed to launch`
-              : "No EmuDeck launcher mapped yet"),
+  const messages = [
       missingEmulator
         ? h("div", { class: "bios-banner" },
             icon("alert"),
@@ -636,8 +642,35 @@ async function renderGame(id, token) {
               : h("a", { class: "btn small", href: "#/emudeck" }, icon("settings"), "Set up game folders"),
           )
         : null,
+  ].filter(Boolean);
+
+  const body = h("div", null,
+    h("div", { class: "game-hero" },
+      art,
+      h("div", null,
+
+      h("p", { class: "eyebrow" }, rom.platform_name || "Game"),
+      h("h1", { class: "game-title" }, rom.name),
+      h("div", { class: "game-meta" },
+        rom.size ? h("span", { class: "chip" }, fmtBytes(rom.size)) : null,
+        rom.has_multiple_files ? h("span", { class: "chip" }, "Multi-file") : null,
+        installed ? h("span", { class: "chip ok" }, icon("check"), "On this machine") : h("span", { class: "chip" }, "Cloud"),
+        rom.release_year ? h("span", { class: "chip" }, String(rom.release_year)) : null,
+        rom.players ? h("span", { class: "chip" }, rom.players) : null,
+      ),
+      h("div", { class: "game-actions" }, actions),
+      saveNote ? h("div", { class: "play-save", title: saveNote.title }, icon("clock"), h("span", null, saveNote.text)) : null,
+      h("div", { class: "play-via" }, icon("cart"),
+        !emuOn
+          ? "EmuDeck integration is off — browsing only"
+          : mapping.launcher
+            ? `Plays through EmuDeck · ${mapping.launcher_name || mapping.launcher}${mapping.core ? " · " + mapping.core : ""}`
+            : libraryMode
+              ? `Installs to ${mapping.path || library.roms_root} · EmuDeck is needed to launch`
+              : "No EmuDeck launcher mapped yet"),
       ),
     ),
+    messages.length ? h("div", { class: "game-messages" }, ...messages) : null,
     tabBar,
     panelWrap,
   );
@@ -1222,26 +1255,22 @@ function biosManagerBody(platform) {
   const local = platform.local || {};
   const required = local.bios_required || [];
   const missing = local.bios_missing || [];
+  const rommTitle = h("div", { class: "section-title" }, "In RomM");
   const rommList = h("div");
+  const localTitle = h("div", { class: "section-title", style: { marginTop: "18px" } }, "On this machine");
   const localList = h("div");
-  const requiredSection = required.length
-    ? h("div", { style: { marginBottom: "16px" } },
-        h("div", { class: "section-title" }, "Required BIOS"),
-        ...required.map((name) => h("div", {
-          class: "row",
-          style: { justifyContent: "space-between", alignItems: "center", padding: "6px 0" },
-        },
-          h("span", null, name),
-          h("span", { class: `chip ${missing.includes(name) ? "" : "ok"}` },
-            missing.includes(name) ? "Missing" : "Present"),
-        )),
-        local.bios_folder ? h("p", { class: "note" }, `Folder: ${local.bios_folder}`) : null,
-      )
-    : null;
+  const LIMIT = 6;
+  let rommFiles = [];
+  let localFiles = [];
+  let localFolder = "";
+  let query = "";
+  let showAllRomm = false;
+  let showAllLocal = false;
 
+  const matches = (name) => !query || String(name || "").toLowerCase().includes(query);
   const row = (name, note, actions) => h("div", {
     class: "row",
-    style: { justifyContent: "space-between", alignItems: "center", gap: "12px", padding: "10px 0", borderTop: "1px solid rgba(255,255,255,.08)" },
+    style: { justifyContent: "space-between", alignItems: "center", gap: "12px", padding: "9px 0", borderTop: "1px solid rgba(255,255,255,.08)" },
   },
     h("div", { style: { minWidth: "0" } },
       h("div", { style: { fontWeight: "600", overflowWrap: "anywhere" } }, name),
@@ -1250,20 +1279,17 @@ function biosManagerBody(platform) {
     h("div", { class: "row", style: { flexShrink: "0" } }, actions),
   );
 
-  const reload = async () => {
-    rommList.replaceChildren(h("p", { class: "note" }, "Reading RomM…"));
-    localList.replaceChildren(h("p", { class: "note" }, "Reading the BIOS folder…"));
-    const [romm, localData] = await Promise.all([
-      api.firmware(platformId).then((data) => data.firmware || []).catch((error) => error),
-      api.localBios(platformId).catch((error) => error),
-    ]);
-
-    if (!Array.isArray(romm)) {
-      rommList.replaceChildren(h("p", { class: "note" }, romm.message));
-    } else if (!romm.length) {
-      rommList.replaceChildren(h("p", { class: "note" }, "RomM has no BIOS files for this platform yet."));
-    } else {
-      rommList.replaceChildren(...romm.map((file) => {
+  const drawRomm = () => {
+    const filtered = rommFiles.filter((file) => matches(file.file_name));
+    rommTitle.textContent = `In RomM · ${filtered.length}${filtered.length !== rommFiles.length ? ` of ${rommFiles.length}` : ""}`;
+    if (!filtered.length) {
+      rommList.replaceChildren(h("p", { class: "note" },
+        rommFiles.length ? "No BIOS file matches that filter." : "RomM has no BIOS files for this platform yet."));
+      return;
+    }
+    const shown = showAllRomm ? filtered : filtered.slice(0, LIMIT);
+    rommList.replaceChildren(
+      ...shown.map((file) => {
         const del = h("button", { class: "btn small danger" }, icon("trash"), "Delete");
         del.addEventListener("click", async () => {
           if (!window.confirm(`Delete ${file.file_name} from RomM? This removes it from the server's BIOS folder.`)) return;
@@ -1276,7 +1302,20 @@ function biosManagerBody(platform) {
         });
         let localAction;
         if (file.installed) {
-          localAction = h("span", { class: "chip ok" }, icon("check"), "On this machine");
+          const remove = h("button", { class: "btn small ghost" }, "Remove local");
+          remove.addEventListener("click", async () => {
+            if (!window.confirm(`Delete ${file.file_name} from this machine's BIOS folder? It stays in RomM.`)) return;
+            remove.disabled = true;
+            try {
+              await api.deleteLocalBios(platformId, file.file_name);
+              toast(`${file.file_name} removed from this machine`, "good");
+              await reload();
+            } catch (error) { remove.disabled = false; toast(error.message, "bad"); }
+          });
+          localAction = h("span", { class: "row", style: { gap: "6px" } },
+            h("span", { class: "chip ok" }, icon("check"), "On this machine"),
+            remove,
+          );
         } else {
           localAction = h("button", { class: "btn small" }, icon("download"), "Download");
           localAction.addEventListener("click", () => {
@@ -1286,16 +1325,31 @@ function biosManagerBody(platform) {
           });
         }
         return row(file.file_name, `${fmtBytes(Number(file.file_size_bytes) || 0)} · RomM`, [localAction, del]);
-      }));
-    }
+      }),
+      filtered.length > LIMIT
+        ? h("button", {
+            class: "btn small ghost",
+            style: { marginTop: "8px" },
+            onClick: () => { showAllRomm = !showAllRomm; drawRomm(); },
+          }, showAllRomm ? "Show fewer" : `Show all ${filtered.length}`)
+        : null,
+    );
+  };
 
-    if (!localData || !Array.isArray(localData.files)) {
-      localList.replaceChildren(h("p", { class: "note" }, localData?.message || "Could not read the BIOS folder."));
-    } else if (!localData.files.length) {
+  const drawLocal = () => {
+    const rommNames = new Set(rommFiles.map((file) => String(file.file_name || "").toLowerCase()));
+    const extras = localFiles.filter((file) => !rommNames.has(String(file.name || "").toLowerCase()));
+    const filtered = extras.filter((file) => matches(file.name));
+    localTitle.textContent = `Other files on this machine · ${filtered.length}${filtered.length !== extras.length ? ` of ${extras.length}` : ""}`;
+    if (!filtered.length) {
       localList.replaceChildren(h("p", { class: "note" },
-        `No BIOS files on this machine${localData.folder ? ` in ${localData.folder}` : ""}.`));
-    } else {
-      localList.replaceChildren(...localData.files.map((file) => {
+        extras.length ? "No BIOS file matches that filter."
+          : `No unmanaged BIOS files${localFolder ? ` in ${localFolder}` : ""}. Files already in RomM are listed above.`));
+      return;
+    }
+    const shown = showAllLocal ? filtered : filtered.slice(0, LIMIT);
+    localList.replaceChildren(
+      ...shown.map((file) => {
         const del = h("button", { class: "btn small danger" }, icon("trash"), "Delete");
         del.addEventListener("click", async () => {
           if (!window.confirm(`Delete ${file.name} from this machine's BIOS folder?`)) return;
@@ -1307,9 +1361,57 @@ function biosManagerBody(platform) {
           } catch (error) { del.disabled = false; toast(error.message, "bad"); }
         });
         return row(file.name, `${fmtBytes(Number(file.size) || 0)} · this machine`, [del]);
-      }));
+      }),
+      filtered.length > LIMIT
+        ? h("button", {
+            class: "btn small ghost",
+            style: { marginTop: "8px" },
+            onClick: () => { showAllLocal = !showAllLocal; drawLocal(); },
+          }, showAllLocal ? "Show fewer" : `Show all ${filtered.length}`)
+        : null,
+    );
+  };
+
+  const reload = async () => {
+    rommList.replaceChildren(h("p", { class: "note" }, "Reading RomM…"));
+    localList.replaceChildren(h("p", { class: "note" }, "Reading the BIOS folder…"));
+    const [romm, localData] = await Promise.all([
+      api.firmware(platformId).then((data) => data.firmware || []).catch((error) => error),
+      api.localBios(platformId).catch((error) => error),
+    ]);
+    if (!Array.isArray(romm)) {
+      rommFiles = [];
+      rommTitle.textContent = "In RomM";
+      rommList.replaceChildren(h("p", { class: "note" }, romm.message));
+    } else {
+      rommFiles = romm;
+      drawRomm();
+    }
+    if (!localData || !Array.isArray(localData.files)) {
+      localFiles = [];
+      localFolder = "";
+      localTitle.textContent = "On this machine";
+      localList.replaceChildren(h("p", { class: "note" }, localData?.message || "Could not read the BIOS folder."));
+    } else {
+      localFiles = localData.files;
+      localFolder = localData.folder || "";
+      drawLocal();
     }
   };
+
+  const search = h("input", {
+    class: "input",
+    type: "search",
+    placeholder: "Filter BIOS files…",
+    style: { marginBottom: "12px" },
+    onInput: (event) => {
+      query = event.target.value.trim().toLowerCase();
+      showAllRomm = false;
+      showAllLocal = false;
+      drawRomm();
+      drawLocal();
+    },
+  });
 
   const input = h("input", { type: "file", multiple: true, style: { flex: "1", minWidth: "0" } });
   const upload = h("button", { class: "btn primary" }, icon("upload"), "Upload to RomM");
@@ -1333,11 +1435,27 @@ function biosManagerBody(platform) {
     finally { upload.disabled = false; }
   });
 
+  const requiredSection = required.length
+    ? h("div", { style: { marginBottom: "16px" } },
+        h("div", { class: "section-title" }, "Required BIOS"),
+        ...required.map((name) => h("div", {
+          class: "row",
+          style: { justifyContent: "space-between", alignItems: "center", padding: "6px 0" },
+        },
+          h("span", null, name),
+          h("span", { class: `chip ${missing.includes(name) ? "" : "ok"}` },
+            missing.includes(name) ? "Missing" : "Present"),
+        )),
+        local.bios_folder ? h("p", { class: "note" }, `Folder: ${local.bios_folder}`) : null,
+      )
+    : null;
+
   const node = h("div", null,
     requiredSection,
-    h("div", { class: "section-title" }, "In RomM"),
+    search,
+    rommTitle,
     rommList,
-    h("div", { class: "section-title", style: { marginTop: "18px" } }, "On this machine"),
+    localTitle,
     localList,
     h("div", { class: "row", style: { marginTop: "12px", gap: "10px" } }, input, upload),
     h("p", { class: "note" },
