@@ -798,6 +798,11 @@ def _save_matches(name: str, stem: str) -> bool:
     )
 
 
+def matches_rom_stem(name: str, stem: str) -> bool:
+    """Whether a save name belongs to one ROM, by EmuDeck's naming rule."""
+    return bool(name and stem) and _save_matches(name, stem)
+
+
 def remove_game_saves(emulation_root: str, platform_dir: str, rom_stem: str) -> list[str]:
     """Remove save files and states whose names belong to one installed ROM.
 
@@ -845,8 +850,8 @@ def build_command(mapping: dict[str, Any], file_path: str) -> list[str]:
     return command
 
 
-def spawn(command: list[str], log_file: str, env: dict[str, str] | None = None) -> int:
-    """Start an emulator detached from the app, in the user's GUI session."""
+def spawn_process(command: list[str], log_file: str, env: dict[str, str] | None = None):
+    """Start an emulator detached from the app, returning the process handle."""
     user_env = dict(os.environ if env is None else env)
     user_env.setdefault("HOME", os.path.expanduser("~"))
     if sys.platform.startswith("linux"):
@@ -881,7 +886,12 @@ def spawn(command: list[str], log_file: str, env: dict[str, str] | None = None) 
         process = subprocess.Popen(command, **kwargs)
     finally:
         handle.close()
-    return process.pid
+    return process
+
+
+def spawn(command: list[str], log_file: str, env: dict[str, str] | None = None) -> int:
+    """Start an emulator detached from the app, returning its pid."""
+    return spawn_process(command, log_file, env).pid
 
 
 def detect(config: dict[str, Any] | None = None) -> dict[str, Any]:

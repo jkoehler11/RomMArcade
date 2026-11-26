@@ -215,6 +215,7 @@ export function gameCard(rom, { showPlay = true, eager = false } = {}) {
     card.append(h("button", {
       class: "card-play",
       "data-stop": "",
+      dataset: { playRom: String(rom.id) },
       title: installed ? "Play" : canPlay ? "Install and play" : "Install game",
       "aria-label": installed ? `Play ${rom.name}` : `Install ${rom.name}`,
       onClick: (event) => {

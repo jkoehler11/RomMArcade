@@ -502,6 +502,7 @@ async function renderGame(id, token) {
       class: "btn primary",
       disabled: !canPlay,
       title: !canPlay ? (mapping.launcher ? `Install ${launcherName} first` : libraryMode ? "EmuDeck is needed to launch games" : "No launcher is mapped") : "",
+      dataset: { playRom: String(rom.id) },
       onClick: () => playRom(rom.id),
     }, icon("play"), "Play"));
     actions.push(h("span", { class: "chip ok" }, icon("check"), "Installed"));
@@ -771,12 +772,73 @@ async function installRom(romId, { play = false } = {}) {
   }
 }
 
+function setPlayBusy(romId, busy) {
+  document.querySelectorAll(`[data-play-rom="${Number(romId)}"]`).forEach((el) => {
+    if (busy) {
+      if (!el.dataset.idleHtml) el.dataset.idleHtml = el.innerHTML;
+      el.dataset.idleTitle = el.title;
+      el.disabled = true;
+      el.classList.add("syncing");
+      el.title = "Syncing saves…";
+      const spinner = h("span", { class: "spinner", "aria-hidden": "true" });
+      if (el.classList.contains("card-play")) el.replaceChildren(spinner);
+      else el.replaceChildren(spinner, "Syncing saves…");
+    } else {
+      el.disabled = false;
+      el.classList.remove("syncing");
+      if (el.dataset.idleHtml) {
+        el.innerHTML = el.dataset.idleHtml;
+        delete el.dataset.idleHtml;
+      }
+      if (el.dataset.idleTitle !== undefined) {
+        el.title = el.dataset.idleTitle;
+        delete el.dataset.idleTitle;
+      }
+    }
+  });
+}
+
+function openSyncProblem(romId, error) {
+  const summary = error.payload?.save_sync || {};
+  const conflict = Boolean(error.payload?.save_conflict);
+  const serverUrl = state.status?.server?.url || "";
+  const close = h("button", { class: "btn primary", onClick: closeModal }, "Close");
+  const actions = [close];
+  if (serverUrl) {
+    actions.unshift(h("a", {
+      class: "btn",
+      href: `${serverUrl}/saves`,
+      target: "_blank",
+      rel: "noreferrer",
+    }, "Open RomM saves"));
+  }
+  openModal(h("div", { class: "sheet" },
+    h("h2", null, conflict ? "Saves changed in both places" : "Saves did not sync"),
+    h("p", null, error.message),
+    h("p", { class: "note" },
+      conflict
+        ? "Nothing was overwritten and the emulator was not started. RomM keeps each version of a save, so you can pick the copy to keep there."
+        : "The emulator was not started, so the game cannot open on an older save than RomM holds."),
+    summary.reason ? h("p", { class: "note" }, summary.reason) : null,
+    h("div", { class: "row end" }, actions),
+  ));
+}
+
 async function playRom(romId) {
+  setPlayBusy(romId, true);
   try {
     const result = await api.play(romId);
-    toast(`Launching ${result.launcher || "the emulator"}${result.core ? " (" + result.core + ")" : ""}`, "good");
+    const sync = result.saves || {};
+    const pulled = Number(sync.downloaded) || 0;
+    const pushed = Number(sync.uploaded) || 0;
+    const note = pulled
+      ? ` · ${pulled} save${pulled === 1 ? "" : "s"} synced`
+      : pushed ? ` · ${pushed} save${pushed === 1 ? "" : "s"} uploaded` : "";
+    toast(`Launching ${result.launcher || "the emulator"}${result.core ? " (" + result.core + ")" : ""}${note}`, "good");
   } catch (error) {
-    if (error.payload?.needs_install) {
+    if (error.payload?.save_conflict || error.payload?.save_sync) {
+      openSyncProblem(romId, error);
+    } else if (error.payload?.needs_install) {
       openModal(h("div", { class: "sheet" },
         h("h2", null, "Not installed yet"),
         h("p", null, error.message),
@@ -788,6 +850,8 @@ async function playRom(romId) {
     } else {
       toast(error.message, "bad");
     }
+  } finally {
+    setPlayBusy(romId, false);
   }
 }
 
@@ -892,6 +956,7 @@ function playButtonFor(romId, label = "Play", { enabled = true, title = "" } = {
     class: "btn primary",
     disabled: !enabled,
     title: title || (enabled ? "" : "EmuDeck is needed to launch games"),
+    dataset: { playRom: String(romId) },
     onClick: () => playRom(romId),
   }, icon("play"), label);
 }
@@ -905,6 +970,7 @@ function cardPlayButtonFor(romId, name = "") {
   return h("button", {
     class: "card-play",
     "data-stop": "",
+    dataset: { playRom: String(romId) },
     title: "Play",
     "aria-label": `Play ${name}`,
     onClick: (event) => {

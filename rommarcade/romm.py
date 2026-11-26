@@ -13,6 +13,7 @@ import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from typing import Any, Iterable
 
 from . import USER_AGENT
@@ -80,10 +81,14 @@ class RomMClient:
         body: Any = None,
         timeout: float | None = None,
         headers: dict[str, str] | None = None,
+        data: bytes | None = None,
+        content_type: str | None = None,
     ):
-        data = None
         request_headers = dict(self._headers)
-        if body is not None:
+        if data is not None:
+            if content_type:
+                request_headers["Content-Type"] = content_type
+        elif body is not None:
             data = json.dumps(body).encode("utf-8")
             request_headers["Content-Type"] = "application/json"
         if headers:
@@ -199,6 +204,86 @@ class RomMClient:
         if ids:
             params = {"file_ids": ids}
         return self.open(self.content_path(rom_id, file_name), params, timeout=90)
+
+    # -- saves and sync ---------------------------------------------------
+    def register_device(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.json("POST", "/api/devices", body=payload) or {}
+
+    def sync_negotiate(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.json("POST", "/api/sync/negotiate", body=payload) or {}
+
+    def open_save_content(
+        self,
+        save_id: int,
+        device_id: str | None = None,
+        optimistic: bool = True,
+        session_id: int | None = None,
+    ):
+        """Open a save's bytes; the caller owns the response."""
+        params: dict[str, Any] = {
+            "device_id": device_id or None,
+            "optimistic": "true" if optimistic else "false",
+            "session_id": session_id,
+        }
+        return self.open(f"/api/saves/{int(save_id)}/content", params, timeout=120)
+
+    def confirm_save_downloaded(
+        self, save_id: int, device_id: str, content_hash: str | None = None
+    ) -> dict[str, Any]:
+        return self.json(
+            "POST",
+            f"/api/saves/{int(save_id)}/downloaded",
+            body={"device_id": device_id, "content_hash": content_hash},
+        ) or {}
+
+    def upload_save(
+        self,
+        rom_id: int,
+        data: bytes,
+        *,
+        file_name: str,
+        emulator: str | None = None,
+        slot: str | None = None,
+        device_id: str | None = None,
+        content_hash: str | None = None,
+        overwrite: bool = False,
+        session_id: int | None = None,
+    ) -> dict[str, Any]:
+        """POST one save as multipart/form-data (stdlib only)."""
+        boundary = "----rommarcade" + uuid.uuid4().hex
+        ascii_name = file_name.encode("ascii", "replace").decode("ascii").replace('"', "_")
+        quoted = urllib.parse.quote(file_name)
+        head = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="saveFile"; filename="{ascii_name}"; '
+            f"filename*=UTF-8''{quoted}\r\n"
+            "Content-Type: application/octet-stream\r\n\r\n"
+        ).encode("ascii")
+        body = head + data + f"\r\n--{boundary}--\r\n".encode("ascii")
+        params = {
+            "rom_id": int(rom_id),
+            "emulator": emulator or None,
+            "slot": slot or None,
+            "device_id": device_id or None,
+            "content_hash": content_hash or None,
+            "overwrite": "true" if overwrite else None,
+            "session_id": session_id,
+        }
+        with self._open(
+            "POST",
+            "/api/saves",
+            params,
+            data=body,
+            content_type=f"multipart/form-data; boundary={boundary}",
+            timeout=120,
+        ) as response:
+            raw = response.read()
+        if not raw:
+            return {}
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise RomMError("The server answered a save upload with something that was not JSON.") from None
 
     # -- convenience ------------------------------------------------------
     def probe(self) -> dict[str, Any]:

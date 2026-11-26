@@ -48,9 +48,11 @@ from .emudeck import (
     rom_file,
     rom_target_name,
     spawn,
+    spawn_process,
     suggest_library_root,
 )
 from .romm import RomMClient, RomMError
+from .saves import SaveSyncError, SaveSyncService
 from .state import StateStore, ensure_dirs
 
 WEB_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
@@ -104,6 +106,7 @@ class App:
         self._pairings: dict[str, dict[str, Any]] = {}
         self._device_identifier = self._load_device_identifier()
         self._reachability: tuple[float, dict[str, Any]] | None = None
+        self.save_sync = SaveSyncService(self.config, self.log, self._device_identifier)
 
     # -- helpers ----------------------------------------------------------
     def log(self, message: str) -> None:
@@ -696,6 +699,7 @@ class App:
                 },
                 "web_port": int(cfg.get("web", {}).get("port") or 8790),
                 "device_identifier": self._device_identifier,
+                "save_sync": self.save_sync.snapshot(),
                 "started": self.started,
                 "downloads": len([j for j in self.downloads.list() if j["status"] in ("queued", "downloading", "extracting")]),
             }
@@ -1072,18 +1076,37 @@ class App:
             return {"dry_run": True, "command": command, "rom": rom_id, "path": installed["path"]}
         if not os.path.exists(command[0]):
             raise HttpError(409, f"The {mapping.get('launcher_name') or 'emulator'} launcher is missing.")
+        # A launch must not start on a stale save: the game's saves are brought
+        # in step with RomM first, and a save that cannot be restored or that
+        # changed on both sides stops the launch instead of picking a winner.
+        emu_root = detect_emudeck(self.config.get()).get("root") or ""
+        sync: dict[str, Any] | None = None
+        try:
+            sync = self.save_sync.before_play(rom, mapping, emu_root, self.client(), self.active_server())
+        except SaveSyncError as exc:
+            raise HttpError(
+                409,
+                str(exc),
+                rom_id=rom_id,
+                save_sync=exc.summary,
+                save_conflict=exc.summary.get("status") == "conflict",
+            ) from None
         log = os.path.join(data_dir(), "launcher.log")
-        pid = spawn(command, log)
+        process = spawn_process(command, log)
         self.state.mark_played(rom, rom.get("platform_fs_slug") or mapping.get("platform") or "")
-        self.log(f"play rom {rom_id} with {command[0]} pid={pid}")
+        note = f" after save sync ({sync.get('status')})" if sync else ""
+        self.log(f"play rom {rom_id} with {command[0]} pid={process.pid}{note}")
+        if sync and sync.get("enabled"):
+            self.save_sync.watch_exit(process, rom, mapping, emu_root, self.client(), self.active_server())
         return {
             "launched": True,
-            "pid": pid,
+            "pid": process.pid,
             "command": command,
             "path": installed["path"],
             "launcher": mapping.get("launcher"),
             "core": mapping.get("core"),
             "log": log,
+            "saves": sync,
         }
 
     # -- covers -----------------------------------------------------------

@@ -12,6 +12,7 @@ REQUESTED_SCOPES = [
     "platforms.read",
     "roms.read",
     "assets.read",
+    "assets.write",
     "firmware.read",
     "devices.read",
     "devices.write",
