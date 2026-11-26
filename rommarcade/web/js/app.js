@@ -582,11 +582,7 @@ async function renderGame(id, token) {
         : null,
       rom.summary ? h("p", { class: "game-summary" }, rom.summary) : null,
       facts,
-      (rom.files || []).length
-        ? [h("div", { class: "section-title" }, "Files"),
-           h("div", { class: "file-list" }, rom.files.map((file) => h("div", { class: "file-row" },
-             icon("folder"), h("span", { class: "n" }, file.file_name || "file"), h("span", null, file.size ? fmtBytes(file.size) : ""))))]
-        : null,
+      (rom.files || []).length ? fileListSection(rom.files) : null,
     ),
   );
   mount(viewEl, body);
@@ -607,6 +603,31 @@ function fact(key, value, tone = "", mono = false, wide = false) {
     h("div", { class: "k" }, key),
     h("div", { class: `v ${mono ? "mono" : ""} ${tone}` }, value || "—"),
   );
+}
+
+const FILE_PREVIEW = 6;
+
+function fileListSection(files) {
+  const wrap = h("div");
+  let expanded = false;
+  const draw = () => {
+    const shown = expanded ? files : files.slice(0, FILE_PREVIEW);
+    mount(wrap,
+      h("div", { class: "section-title" }, `Files · ${files.length}`),
+      h("div", { class: `file-list ${expanded ? "scrollable" : ""}` }, shown.map((file) => h("div", { class: "file-row" },
+        icon("folder"),
+        h("span", { class: "n", title: file.file_path || file.file_name || "" }, file.file_name || "file"),
+        h("span", null, file.size ? fmtBytes(file.size) : "")))),
+      files.length > FILE_PREVIEW
+        ? h("button", {
+            class: "btn small ghost file-more",
+            onClick: () => { expanded = !expanded; draw(); },
+          }, expanded ? `Show first ${FILE_PREVIEW}` : `Show all ${files.length} files`)
+        : null,
+    );
+  };
+  draw();
+  return wrap;
 }
 
 // ------------------------------------------------------------ installed ---
