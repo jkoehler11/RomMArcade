@@ -1,6 +1,6 @@
 """RomMArcade: an EmuDeck-native arcade front-end for RomM libraries."""
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 PRODUCT = "RomMArcade"
 PRODUCT_TAGLINE = "Your RomM library, in an arcade shell."
