@@ -201,6 +201,7 @@ export function gameCard(rom, { showPlay = true, eager = false } = {}) {
   if (installed) badges.append(h("span", { class: "badge local" }, "Local"));
   if (installing) badges.append(h("span", { class: "badge cloud", "data-install-badge": rom.id }, installLabel(job)));
   if (rom.has_multiple_files) badges.append(h("span", { class: "badge muted" }, "Multi"));
+  if (Number(rom.version_count) > 1) badges.append(h("span", { class: "badge muted" }, `${rom.version_count} versions`));
   if (!installed && !installing && rom.mapping && !rom.mapping.exists) badges.append(h("span", { class: "badge warn" }, "No folder"));
   card.append(cover, badges);
   if (showPlay && installing) {

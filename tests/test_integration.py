@@ -48,7 +48,7 @@ from rommarcade.emudeck import (
 )
 from rommarcade.romm import RomMClient
 from rommarcade.saves import SyncState, local_saves
-from rommarcade.server import App, Server, Handler, _is_game_rom
+from rommarcade.server import App, Server, Handler, _is_game_rom, collapse_sibling_roms
 
 TOKEN = "rmm_testtoken"
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
@@ -522,6 +522,71 @@ class UnitTests(unittest.TestCase):
         self.assertTrue(stub.get("stub"))
         self.assertFalse(stub.get("ready"))
         self.assertEqual(platform_choices("xbox", only_retroarch, ["mesen"])["launchers"], [])
+
+    def test_save_files_are_not_games(self):
+        srm = {
+            "platform_fs_slug": "n64",
+            "files": [{"file_name": "Super Mario 64 (USA).srm", "is_top_level": True}],
+        }
+        self.assertFalse(_is_game_rom(srm))
+        rom = {
+            "platform_fs_slug": "n64",
+            "files": [{"file_name": "Super Mario 64 (USA).7z", "is_top_level": True}],
+        }
+        self.assertTrue(_is_game_rom(rom))
+
+    def test_sibling_collapse_is_stem_aware(self):
+        twisted_chd = {
+            "id": 192, "name": "Twisted Metal: Black", "fs_size_bytes": 3405164262,
+            "files": [{"file_name": "SCUS-97101 (1.00).chd", "is_top_level": True}],
+            "sibling_roms": [{"id": 565}],
+        }
+        twisted_zip = {
+            "id": 565, "name": "Twisted Metal: Black", "fs_size_bytes": 2933733719,
+            "files": [{"file_name": "Twisted Metal_ Black.zip", "is_top_level": True}],
+            "sibling_roms": [{"id": 192}],
+        }
+        out = collapse_sibling_roms([twisted_chd, twisted_zip])
+        visible = [rom for rom in out if not rom.get("hidden_sibling")]
+        self.assertEqual([rom["id"] for rom in visible], [192], "the .chd is the representative")
+        self.assertEqual(visible[0]["version_count"], 2)
+        self.assertEqual({entry["id"] for entry in visible[0]["versions"]}, {192, 565})
+        hidden = [rom for rom in out if rom.get("hidden_sibling")][0]
+        self.assertEqual(hidden["id"], 565)
+        self.assertEqual(hidden["version_of"], 192)
+        self.assertEqual(hidden["version_count"], 2, "the hidden page still offers the picker")
+
+        allstars = {
+            "id": 210, "name": "Super Mario RPG: Legend of the Seven Stars",
+            "files": [{"file_name": "Super Mario All-Stars (USA).zip", "is_top_level": True}],
+            "sibling_roms": [{"id": 212}],
+        }
+        rpg = {
+            "id": 212, "name": "Super Mario RPG: Legend of the Seven Stars",
+            "files": [{"file_name": "Super Mario RPG - Legend of the Seven Stars (USA).zip", "is_top_level": True}],
+            "sibling_roms": [{"id": 210}],
+        }
+        pokemon_3ds = {
+            "id": 493, "name": "Pokémon X",
+            "files": [{"file_name": "Pokemon X (USA) (En,Ja,Fr,De,Es,It,Ko) Decrypted.3ds", "is_top_level": True}],
+            "sibling_roms": [{"id": 497}],
+        }
+        pokemon_zip = {
+            "id": 497, "name": "Pokémon X",
+            "files": [{"file_name": "Pokemon X (USA) (EnJaFrDeEsItKo).7z", "is_top_level": True}],
+            "sibling_roms": [{"id": 493}],
+        }
+        out = collapse_sibling_roms([pokemon_3ds, pokemon_zip])
+        visible = [rom for rom in out if not rom.get("hidden_sibling")]
+        self.assertEqual([rom["id"] for rom in visible], [493], "region tags do not defeat the stem match")
+        self.assertEqual(visible[0]["version_count"], 2)
+
+        out = collapse_sibling_roms([allstars, rpg])
+        self.assertEqual(
+            sorted(rom["id"] for rom in out if not rom.get("hidden_sibling")),
+            [210, 212],
+            "a bad IGDB match must not hide a different game",
+        )
 
     def test_xemu_reports_missing_bios(self):
         with tempfile.TemporaryDirectory() as tmp:

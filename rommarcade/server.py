@@ -62,6 +62,10 @@ MAX_BODY = 2 * 1024 * 1024
 COVER_LIMIT = 12 * 1024 * 1024
 MAX_LIBRARY = 5000
 TOOL_PLATFORMS = {"emulators", "cloud", "remoteplay"}
+SAVE_FILE_EXTENSIONS = {
+    ".srm", ".sav", ".state", ".st", ".ss", ".rtc", ".eep", ".fla", ".mpk", ".mcd",
+    ".mem", ".nv", ".ps2", ".psu", ".mcr", ".sra", ".frz", ".bcr", ".bcs", ".gci",
+}
 TOOL_EXTENSIONS = {
     ".sh", ".exe", ".appimage", ".desktop", ".bat", ".cmd", ".py", ".dll", ".so",
     ".msi", ".dmg", ".pkg", ".deb", ".rpm", ".txt", ".md", ".json", ".xml", ".ini",
@@ -209,7 +213,7 @@ class App:
                     break
         except RomMError:
             return []
-        return self._cache_set("library", items)
+        return self._cache_set("library", collapse_sibling_roms(items))
 
     def _game_ids(self) -> set[int]:
         return {int(rom["id"]) for rom in self.library_roms() if rom.get("id") is not None}
@@ -303,6 +307,8 @@ class App:
             counts[str(entry.get("platform") or "")] = counts.get(str(entry.get("platform") or ""), 0) + 1
         game_counts: dict[str, int] = {}
         for game in self.library_roms():
+            if game.get("hidden_sibling"):
+                continue
             key = str(game.get("platform_fs_slug") or game.get("platform_slug") or "")
             game_counts[key] = game_counts.get(key, 0) + 1
         out = []
@@ -332,7 +338,7 @@ class App:
             item["game_count"] = game_counts.get(fs_slug, 0)
             item["is_game_platform"] = fs_slug.lower() not in TOOL_PLATFORMS
             item["local"] = {
-                **mapping,
+                **_public_mapping(mapping, enabled),
                 "installed_count": counts.get(mapping["platform"], 0),
             }
             out.append(item)
@@ -485,6 +491,16 @@ class App:
                 rom = items[0]
         if not _is_game_rom(rom):
             raise HttpError(404, "That RomM entry is not a game.")
+        # A hidden sibling still opens its own page; copy its version group from
+        # the library so the picker is there too.
+        library = next(
+            (entry for entry in self.library_roms() if int(entry.get("id") or 0) == int(rom_id)),
+            None,
+        )
+        if library:
+            for field in ("version_count", "versions", "hidden_sibling", "version_of"):
+                if library.get(field) is not None:
+                    rom[field] = library[field]
         enriched = self.enrich_rom(rom, detail=True)
         return self._cache_set(key, enriched)
 
@@ -518,23 +534,9 @@ class App:
             "file_name": (rom_file(rom) or {}).get("file_name") or rom.get("fs_name") or "",
             "target": target,
             "installed": installed,
-            "mapping": {
-                "platform": mapping.get("platform") or fs_slug,
-                "enabled": bool(mapping.get("enabled", True)),
-                "dir": mapping.get("dir") or "",
-                "path": mapping.get("path") or "",
-                "exists": bool(mapping.get("exists")),
-                "launcher": mapping.get("launcher") or "",
-                "launcher_name": mapping.get("launcher_name") or "",
-                "launcher_path": mapping.get("launcher_path") or "",
-                "launcher_ready": bool(mapping.get("launcher_ready")),
-                "launcher_url": mapping.get("launcher_url") or "",
-                "bios_required": list(mapping.get("bios_required") or []),
-                "bios_missing": list(mapping.get("bios_missing") or []),
-                "bios_folder": mapping.get("bios_folder") or "",
-                "core": mapping.get("core") or "",
-                "ready": bool(mapping.get("exists") and mapping.get("launcher")),
-            },
+            "mapping": _public_mapping(mapping, True),
+            "version_count": int(rom.get("version_count") or 1),
+            "versions": rom.get("versions") or [],
         }
         if detail:
             metadatum = rom.get("metadatum") if isinstance(rom.get("metadatum"), dict) else {}
@@ -567,7 +569,7 @@ class App:
         platform = None
         if platform_key and platform_key not in ("all", "*"):
             platform = self.resolve_platform(platform_key)
-        items = list(self.library_roms())
+        items = [rom for rom in self.library_roms() if not rom.get("hidden_sibling")]
         if platform is not None:
             platform_id = int(platform.get("id") or 0)
             slugs = {str(platform.get("slug") or "").lower(), str(platform.get("fs_slug") or "").lower()}
@@ -605,7 +607,7 @@ class App:
             "offset": offset,
         }
 
-    def bios_local(self, platform_id: int) -> dict[str, Any]:
+    def _bios_context(self, platform_id: int) -> dict[str, Any]:
         cfg = self.config.get()
         emu = detect_emudeck(cfg)
         root = emu.get("bios_root") or ""
@@ -616,6 +618,14 @@ class App:
             (cfg.get("emudeck") or {}).get("overrides") or {},
         )
         folder = os.path.join(root, slug) if root and slug and os.path.isdir(os.path.join(root, slug)) else ""
+        return {"root": root, "platform": platform, "slug": slug, "mapping": mapping, "folder": folder}
+
+    def bios_local(self, platform_id: int) -> dict[str, Any]:
+        context = self._bios_context(platform_id)
+        root = context["root"]
+        slug = context["slug"]
+        mapping = context["mapping"]
+        folder = context["folder"]
         files: list[dict[str, Any]] = []
         seen: set[str] = set()
         if folder:
@@ -637,18 +647,12 @@ class App:
             raise ConfigError("Choose a BIOS file to delete.")
         if os.path.basename(name) != name or name in (".", ".."):
             raise ConfigError("That is not a BIOS file name.")
-        cfg = self.config.get()
-        emu = detect_emudeck(cfg)
-        root = emu.get("bios_root") or ""
+        context = self._bios_context(platform_id)
+        root = context["root"]
         if not root:
             raise EmuDeckError("No EmuDeck BIOS folder is set.")
-        platform = self.resolve_platform(platform_id)
-        slug = str(platform.get("fs_slug") or platform.get("slug") or "")
-        mapping = platform_mapping(
-            platform, emu, emu.get("launchers") or [], emu.get("cores") or [],
-            (cfg.get("emudeck") or {}).get("overrides") or {},
-        )
-        folder = os.path.join(root, slug) if slug and os.path.isdir(os.path.join(root, slug)) else root
+        mapping = context["mapping"]
+        folder = context["folder"] or root
         if folder == root and name not in (mapping.get("bios_required") or []):
             raise ConfigError(
                 "Only this emulator's required BIOS files can be deleted from the shared BIOS folder."
@@ -666,6 +670,17 @@ class App:
         os.unlink(path)
         return self.bios_local(platform_id)
 
+    def _firmware_action(self, action: str, call):
+        try:
+            return call()
+        except RomMError as exc:
+            if exc.status == 403:
+                raise ConfigError(
+                    f"RomM refused the {action}: this client token needs the firmware.write scope. "
+                    "Re-pair the server or create a token with firmware.write in RomM."
+                ) from None
+            raise
+
     def upload_firmware(self, body: dict[str, Any]) -> dict[str, Any]:
         platform_id = int(body.get("platform_id") or 0)
         file_name = str(body.get("file_name") or "").strip()
@@ -680,27 +695,13 @@ class App:
             raise ConfigError("The BIOS file is empty.")
         if len(content) > 64 * 1024 * 1024:
             raise ConfigError("That BIOS file is larger than 64 MB.")
-        try:
-            result = self.client().upload_firmware(platform_id, file_name, content)
-        except RomMError as exc:
-            if exc.status == 403:
-                raise ConfigError(
-                    "RomM refused the upload: this client token needs the firmware.write scope. "
-                    "Re-pair the server or create a token with firmware.write in RomM."
-                ) from None
-            raise
+        result = self._firmware_action(
+            "upload", lambda: self.client().upload_firmware(platform_id, file_name, content)
+        )
         return {"uploaded": result, "firmware": self.firmware(platform_id)}
 
     def delete_firmware(self, firmware_id: int) -> dict[str, Any]:
-        try:
-            self.client().delete_firmware(int(firmware_id))
-        except RomMError as exc:
-            if exc.status == 403:
-                raise ConfigError(
-                    "RomM refused the delete: this client token needs the firmware.write scope. "
-                    "Re-pair the server or create a token with firmware.write in RomM."
-                ) from None
-            raise
+        self._firmware_action("delete", lambda: self.client().delete_firmware(int(firmware_id)))
         return {"deleted": int(firmware_id)}
 
     def firmware(self, platform_id: int) -> list[dict[str, Any]]:
@@ -1584,6 +1585,28 @@ def run(host: str = "0.0.0.0", port: int = 8790, config: ConfigStore | None = No
 
 
 # -- small utilities -----------------------------------------------------
+def _public_mapping(mapping: dict[str, Any], enabled: bool = True) -> dict[str, Any]:
+    """The mapping fields the browser may rely on; add new keys here once."""
+    return {
+        "platform": mapping.get("platform") or "",
+        "enabled": bool(mapping.get("enabled", enabled)),
+        "dir": mapping.get("dir") or "",
+        "path": mapping.get("path") or "",
+        "exists": bool(mapping.get("exists")),
+        "launcher": mapping.get("launcher") or "",
+        "launcher_name": mapping.get("launcher_name") or "",
+        "launcher_path": mapping.get("launcher_path") or "",
+        "launcher_ready": bool(mapping.get("launcher_ready")),
+        "launcher_url": mapping.get("launcher_url") or "",
+        "bios_required": list(mapping.get("bios_required") or []),
+        "bios_missing": list(mapping.get("bios_missing") or []),
+        "bios_folder": mapping.get("bios_folder") or "",
+        "core": mapping.get("core") or "",
+        "source": mapping.get("source") or "",
+        "ready": bool(mapping.get("exists") and mapping.get("launcher")),
+    }
+
+
 def _trim_rom(rom: dict[str, Any]) -> dict[str, Any]:
     """Keep the fields the shelf needs and drop nested file trees.
 
@@ -1601,6 +1624,143 @@ def _trim_rom(rom: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+_ROM_FORMAT_SCORES = {
+    ".chd": 6, ".iso": 6, ".rvz": 6, ".gcm": 6, ".wbfs": 6, ".wia": 6,
+    ".3ds": 6, ".cci": 6, ".cia": 5, ".nsp": 6, ".xci": 6, ".nca": 5,
+    ".7z": 2, ".zip": 2, ".rar": 1,
+}
+
+
+def _rom_extension(rom: dict[str, Any]) -> str:
+    files = rom.get("files") or []
+    top = [f for f in files if f.get("is_top_level")] or files
+    for entry in top:
+        name = str(entry.get("file_name") or "")
+        extension = os.path.splitext(name)[1].lower()
+        if extension:
+            return extension
+    return ""
+
+
+def _rom_name_key(rom: dict[str, Any]) -> str:
+    """Match sibling files by title, ignoring punctuation and region tags."""
+    name = str(rom.get("name") or rom.get("fs_name_no_ext") or rom.get("fs_name") or "")
+    name = re.sub(r"\([^)]*\)|\[[^\]]*\]", " ", name)
+    return re.sub(r"[^a-z0-9]+", " ", name.casefold()).strip()
+
+
+def _rom_preference(rom: dict[str, Any]) -> tuple[int, int, int, int]:
+    """Lower wins: a main sibling first, then a directly launchable image, then size/id."""
+    return (
+        0 if rom.get("is_main_sibling") else 1,
+        -_ROM_FORMAT_SCORES.get(_rom_extension(rom), 3),
+        -int(rom.get("fs_size_bytes") or 0),
+        -int(rom.get("id") or 0),
+    )
+
+
+_SERIAL_RE = re.compile(
+    r"\b(S[CL]US|S[CL]PS|SLES|S[CL]PM|S[CL]KA|NUS|DOL|GALE|RVL|CTR)[-_ ]?\d{3,5}\b",
+    re.IGNORECASE,
+)
+
+
+def _file_stem(rom: dict[str, Any]) -> str:
+    files = rom.get("files") or []
+    top = [f for f in files if f.get("is_top_level")] or files
+    if not top:
+        return ""
+    stem = os.path.splitext(os.path.basename(str(top[0].get("file_name") or "")))[0]
+    return re.sub(r"\([^)]*\)|\[[^\]]*\]", " ", stem).strip()
+
+
+def _stems_compatible(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    """Whether two sibling files look like the same game, not a bad IGDB match.
+
+    A serial filename (SCUS-97101) counts as the same game as its title.  Otherwise
+    compare the filename words: remake/metadata mis-matches such as
+    "Super Mario All-Stars" vs "Super Mario RPG" share too few words to merge.
+    """
+    left_stem = _file_stem(left)
+    right_stem = _file_stem(right)
+    if not left_stem or not right_stem:
+        return False
+    if _SERIAL_RE.search(left_stem) or _SERIAL_RE.search(right_stem):
+        return True
+    left_words = set(re.findall(r"[a-z0-9]+", left_stem.casefold()))
+    right_words = set(re.findall(r"[a-z0-9]+", right_stem.casefold()))
+    if not left_words or not right_words:
+        return False
+    return len(left_words & right_words) / len(left_words | right_words) >= 0.5
+
+
+def collapse_sibling_roms(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Mark alternate files of the same game and pick one visible representative.
+
+    RomM links files that matched the same IGDB entry as siblings, but that match
+    can be wrong (Super Mario All-Stars is a sibling of Super Mario RPG).  Only
+    files whose titles normalise to the same key collapse; the rest stay separate.
+    Hidden siblings remain in the list so installs and detail pages still resolve.
+    """
+    by_id = {int(rom["id"]): rom for rom in items if rom.get("id") is not None}
+    parent = {rom_id: rom_id for rom_id in by_id}
+
+    def find(value: int) -> int:
+        while parent[value] != value:
+            parent[value] = parent[parent[value]]
+            value = parent[value]
+        return value
+
+    def union(left: int, right: int) -> None:
+        left, right = find(left), find(right)
+        if left != right:
+            parent[right] = left
+
+    for rom_id, rom in by_id.items():
+        for sibling in rom.get("sibling_roms") or []:
+            sibling_id = int(sibling.get("id") or 0)
+            if sibling_id in by_id:
+                union(rom_id, sibling_id)
+
+    groups: dict[int, list[dict[str, Any]]] = {}
+    for rom_id, rom in by_id.items():
+        groups.setdefault(find(rom_id), []).append(rom)
+
+    for group in groups.values():
+        buckets: dict[str, list[dict[str, Any]]] = {}
+        for rom in group:
+            buckets.setdefault(_rom_name_key(rom), []).append(rom)
+        for same_name in buckets.values():
+            clusters: list[list[dict[str, Any]]] = []
+            for rom in same_name:
+                for cluster in clusters:
+                    if any(_stems_compatible(rom, other) for other in cluster):
+                        cluster.append(rom)
+                        break
+                else:
+                    clusters.append([rom])
+            for cluster in clusters:
+                if len(cluster) < 2:
+                    continue
+                representative = min(cluster, key=_rom_preference)
+                versions = [
+                    {
+                        "id": rom.get("id"),
+                        "name": rom.get("name"),
+                        "file_name": (rom.get("files") or [{}])[0].get("file_name") or "",
+                        "size": int(rom.get("fs_size_bytes") or 0),
+                    }
+                    for rom in sorted(cluster, key=_rom_preference)
+                ]
+                for rom in cluster:
+                    rom["version_count"] = len(cluster)
+                    rom["versions"] = versions
+                    if rom is not representative:
+                        rom["hidden_sibling"] = True
+                        rom["version_of"] = representative.get("id")
+    return items
+
+
 def _is_game_rom(rom: dict[str, Any]) -> bool:
     """Whether a RomM entry is a game rather than an emulator/tool artefact."""
     platform = str(rom.get("platform_fs_slug") or rom.get("platform_slug") or "").lower()
@@ -1615,6 +1775,8 @@ def _is_game_rom(rom: dict[str, Any]) -> bool:
     for entry in top:
         name = str(entry.get("file_name") or "")
         extension = os.path.splitext(name)[1].lower()
+        if extension in SAVE_FILE_EXTENSIONS:
+            continue
         if extension and extension not in TOOL_EXTENSIONS:
             return True
     return False

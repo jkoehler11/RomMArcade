@@ -375,7 +375,7 @@ async function renderPlatform(slug, token) {
 
   const local = platform.local || {};
   const enabled = local.enabled !== false;
-  const needsBios = Boolean((local.bios_required || []).length || Number(platform.firmware_count) > 0);
+  const biosAvailable = needsBios(platform, local);
   const gameCount = Number(platform.game_count ?? platform.rom_count) || 0;
   const mapped = Boolean(enabled && local.exists && local.launcher);
   const head = h("div", { class: "page-head" },
@@ -389,7 +389,7 @@ async function renderPlatform(slug, token) {
       ),
     ),
     h("div", { class: "page-actions" },
-      enabled && needsBios && state.status?.emudeck?.usable
+      enabled && biosAvailable && state.status?.emudeck?.usable
         ? h("button", { class: "btn", onClick: () => openBiosManager(platform) }, icon("download"), "BIOS files")
         : null,
       h("select", {
@@ -462,6 +462,34 @@ function banner({ tone = "warn", title, text, action }) {
 }
 
 // ----------------------------------------------------------------- game ---
+function playSaveNote(saves, installed) {
+  if (!installed || !saves) return null;
+  if (saves.supported === false) return { text: "Save sync unavailable — this machine's save is used" };
+  if (saves.sync?.enabled === false) return { text: "Save sync is off — this machine's save is used" };
+  const slot = saves.slot || "default";
+  const serverRows = (saves.server || []).filter((row) => (row.slot || null) === slot);
+  const current = serverRows.find((row) => row.current) || serverRows[0];
+  const localRows = saves.local || [];
+  const localMain = localRows.find((row) => row.main) || localRows.find((row) => (row.slot || null) === slot);
+  if (!current && !localMain) return { text: `Save · no “${slot}” save yet — the game starts fresh` };
+  const pick = current || localMain;
+  const where = current && localMain
+    ? (current.matches_local ? "here and in RomM" : "here and in RomM, synced on play")
+    : current ? "in RomM" : "on this machine";
+  const stamp = pick.updated_at || pick.mtime || "";
+  let when = "";
+  if (stamp) {
+    const date = new Date(stamp);
+    if (!Number.isNaN(date.getTime())) {
+      when = " · " + date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+    }
+  }
+  return {
+    text: `Save · ${slot} · ${fmtBytes(Number(pick.size) || 0)}${when} · ${where}`,
+    title: pick.file_name || pick.name || "",
+  };
+}
+
 async function renderGame(id, token, tab = "") {
   viewEl.replaceChildren(h("div", { class: "skel card", style: { height: "360px" } }));
   const [detail, installs, platforms, saves] = await Promise.all([
@@ -492,7 +520,7 @@ async function renderGame(id, token, tab = "") {
   const canPlay = Boolean(mapping.launcher && mapping.launcher_ready !== false);
   const missingEmulator = emuOn && Boolean(mapping.launcher) && mapping.launcher_ready === false;
   const missingEmuBios = !missingEmulator && emuOn ? (mapping.bios_missing || []) : [];
-  const needsBios = Boolean(platform && ((mapping.bios_required || []).length || Number(platform.firmware_count) > 0));
+  const biosAvailable = needsBios(platform, mapping);
   const launcherName = mapping.launcher_name || mapping.launcher || "Emulator";
   const emuInstaller = state.status?.emudeck?.installer || "";
   const installJob = activeInstallJob(rom.id);
@@ -537,33 +565,8 @@ async function renderGame(id, token, tab = "") {
     fact("Files", String((rom.files || []).length)),
   );
 
-  const saveNote = (() => {
-    if (!installed || !saves) return null;
-    if (saves.supported === false) return { text: "Save sync unavailable — this machine's save is used" };
-    if (saves.sync?.enabled === false) return { text: "Save sync is off — this machine's save is used" };
-    const slot = saves.slot || "default";
-    const serverRows = (saves.server || []).filter((row) => (row.slot || null) === slot);
-    const current = serverRows.find((row) => row.current) || serverRows[0];
-    const localRows = saves.local || [];
-    const localMain = localRows.find((row) => row.main) || localRows.find((row) => (row.slot || null) === slot);
-    if (!current && !localMain) return { text: `Save · no “${slot}” save yet — the game starts fresh` };
-    const pick = current || localMain;
-    const where = current && localMain
-      ? (current.matches_local ? "here and in RomM" : "here and in RomM, synced on play")
-      : current ? "in RomM" : "on this machine";
-    const stamp = pick.updated_at || pick.mtime || "";
-    let when = "";
-    if (stamp) {
-      const date = new Date(stamp);
-      if (!Number.isNaN(date.getTime())) {
-        when = " · " + date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-      }
-    }
-    return {
-      text: `Save · ${slot} · ${fmtBytes(Number(pick.size) || 0)}${when} · ${where}`,
-      title: pick.file_name || pick.name || "",
-    };
-  })();
+  const saveNote = playSaveNote(saves, installed);
+  const versions = rom.versions || [];
 
   const overviewPanel = h("div", null,
     rom.summary ? h("p", { class: "game-summary" }, rom.summary) : null,
@@ -573,7 +576,7 @@ async function renderGame(id, token, tab = "") {
   const filePanel = (rom.files || []).length
     ? fileListSection(rom.files)
     : h("p", { class: "note" }, "RomM did not list individual files for this game.");
-  const biosPanel = needsBios ? biosManagerBody(platform) : null;
+  const biosPanel = biosAvailable ? biosManagerBody(platform) : null;
   const tabDefs = [
     { id: "overview", label: "Overview", node: overviewPanel },
     { id: "saves", label: "Saves", node: savePanel },
@@ -654,9 +657,22 @@ async function renderGame(id, token, tab = "") {
 
       h("p", { class: "eyebrow" }, rom.platform_name || "Game"),
       h("h1", { class: "game-title" }, rom.name),
+      versions.length > 1
+        ? h("div", { class: "version-pick" },
+            h("span", null, "Version"),
+            h("select", {
+              class: "select",
+              onChange: (event) => { location.hash = `#/game/${event.target.value}/${state.gameTab || "overview"}`; },
+            }, versions.map((version) => h("option", {
+              value: version.id,
+              selected: Number(version.id) === Number(rom.id),
+            }, version.file_name || version.name || String(version.id)))),
+          )
+        : null,
       h("div", { class: "game-meta" },
         rom.size ? h("span", { class: "chip" }, fmtBytes(rom.size)) : null,
         rom.has_multiple_files ? h("span", { class: "chip" }, "Multi-file") : null,
+        versions.length > 1 ? h("span", { class: "chip" }, `${versions.length} versions`) : null,
         installed ? h("span", { class: "chip ok" }, icon("check"), "On this machine") : h("span", { class: "chip" }, "Cloud"),
         rom.release_year ? h("span", { class: "chip" }, String(rom.release_year)) : null,
         rom.players ? h("span", { class: "chip" }, rom.players) : null,
@@ -689,6 +705,13 @@ async function renderGame(id, token, tab = "") {
       else if (mapping.exists) installRom(rom.id, { play: canPlay });
     }
   }
+}
+
+function needsBios(platform, mapping = {}) {
+  return Boolean(platform && (
+    (mapping.bios_required || platform.local?.bios_required || []).length
+    || Number(platform.firmware_count) > 0
+  ));
 }
 
 function fact(key, value, tone = "", mono = false, wide = false) {
