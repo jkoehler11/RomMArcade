@@ -168,6 +168,10 @@ def local_saves(root: str, stem: str, slot: str = SLOT) -> list[LocalSave]:
     files: list[LocalSave] = []
     folders: list[LocalSave] = []
     for name in sorted(os.listdir(root)):
+        lowered = name.lower()
+        # Our own backups and half-written downloads are not the emulator's saves.
+        if name.startswith(".") or ".pre-restore-" in lowered or lowered.endswith((".part", ".tmp", "~")):
+            continue
         if not matches_rom_stem(name, stem):
             continue
         path = os.path.join(root, name)
@@ -509,9 +513,14 @@ class SaveSyncService:
                     return summary
                 summary["device"] = identity.get("device_id") or "token"
                 for save in local_saves(root, stem, active_slot):
+                    record = self.state.get(f"{server_key}|{int(rom['id'])}|{save.slot}")
+                    if save.hash and record and (record.get("local_hash") or "") == save.hash:
+                        # The emulator closed without touching this save.
+                        summary["skipped"] = summary.get("skipped", 0) + 1
+                        continue
                     item = {"do": "upload", "slot": save.slot, "local": save, "reason": "played"}
                     try:
-                        self._upload(client, server_key, int(rom["id"]), item, identity, mapping, overwrite=True)
+                        self._push(client, server_key, int(rom["id"]), item, identity, mapping)
                         summary["uploaded"] += 1
                         summary["items"].append(_item_public(item))
                     except RomMError as exc:
@@ -626,6 +635,7 @@ class SaveSyncService:
         if not root or not stem:
             raise SaveSyncError("No save folder is known for this platform.", {"status": "error"})
         os.makedirs(root, exist_ok=True)
+        _tidy_legacy_backups(root, stem)
         save = client.save(int(save_id)) or {}
         if int(save.get("rom_id") or 0) != rom_id:
             raise SaveSyncError("That save belongs to a different game.", {"status": "error"})
@@ -670,7 +680,7 @@ class SaveSyncService:
         # Promote the chosen version into the sync slot, so the next launch on
         # this machine or another one starts from it instead of the old head.
         item = {"do": "upload", "slot": slot, "local": local, "reason": "restored"}
-        self._upload(client, server_key, rom_id, item, identity, mapping, overwrite=True)
+        self._push(client, server_key, rom_id, item, identity, mapping)
         self.state.set_slot(f"{server_key}|{rom_id}", slot)
         if identity.get("device_id"):
             try:
@@ -712,8 +722,27 @@ class SaveSyncService:
                               size=_size_of(path), mtime=_newest_mtime(path),
                               hash=folder_hash(path) if os.path.isdir(path) else _md5_file(path))
         identity = self.identity(client, server)
+        head = None
+        try:
+            for row in client.saves(rom_id=rom_id):
+                if row.get("slot") != local.slot:
+                    continue
+                if head is None or str(row.get("updated_at") or "") > str(head.get("updated_at") or ""):
+                    head = row
+        except RomMError:
+            head = None
+        if head and local.hash and head.get("content_hash") == local.hash:
+            # RomM already holds exactly this save; a forced upload would only
+            # add an identical version.
+            self.state.put(f"{server_key}|{rom_id}|{local.slot}", {
+                "local_hash": local.hash, "server_hash": local.hash,
+                "save_id": head.get("id"), "path": local.path,
+                "synced_at": datetime.now(timezone.utc).isoformat(),
+            })
+            return {"slot": local.slot, "file": local.name, "save_id": head.get("id"),
+                    "bytes": 0, "no_op": True}
         item = {"do": "upload", "slot": local.slot, "local": local, "reason": "manual upload"}
-        self._upload(client, server_key, rom_id, item, identity, mapping, overwrite=True)
+        self._push(client, server_key, rom_id, item, identity, mapping)
         self.state.set_slot(f"{server_key}|{rom_id}", local.slot)
         return {"slot": local.slot, "file": local.name, "save_id": item.get("save_id"),
                 "bytes": item.get("bytes") or 0}
@@ -915,6 +944,21 @@ class SaveSyncService:
         item["bytes"] = len(content)
         self.log(f"save sync: downloaded save {save_id} ({slot}) -> {path}")
 
+    def _push(self, client, server_key: str, rom_id: int, item: dict[str, Any],
+              identity: dict[str, Any], mapping: dict[str, Any]) -> None:
+        """Upload without duplicating a version the slot already holds.
+
+        RomM only promotes an existing version when `overwrite` is false.  A
+        409 means the slot moved since this device last synced; a save the user
+        chose, or one an emulator just wrote, then wins explicitly.
+        """
+        try:
+            self._upload(client, server_key, rom_id, item, identity, mapping, overwrite=False)
+        except RomMError as exc:
+            if exc.status != 409:
+                raise
+            self._upload(client, server_key, rom_id, item, identity, mapping, overwrite=True)
+
     def _upload(self, client, server_key: str, rom_id: int, item: dict[str, Any],
                 identity: dict[str, Any], mapping: dict[str, Any], overwrite: bool) -> None:
         local: LocalSave | None = item.get("local")
@@ -941,6 +985,7 @@ class SaveSyncService:
             overwrite=bool(overwrite or item.get("overwrite")),
         )
         server_hash = str((result or {}).get("content_hash") or content_hash or "")
+        item["save_id"] = (result or {}).get("id")
         self.state.put(
             f"{server_key}|{rom_id}|{item.get('slot')}",
             {
@@ -990,18 +1035,62 @@ def _clean_slot(slot: str) -> str:
 
 
 def _backup_path(path: str) -> str:
+    """Keep the pre-restore copy out of the folder the save scan reads."""
     import shutil
 
+    path = path.rstrip(os.sep)
+    folder = os.path.join(os.path.dirname(path), ".rommarcade", "backups")
+    name = os.path.basename(path)
+    os.makedirs(folder, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    backup = path + f".pre-restore-{stamp}"
+    backup = os.path.join(folder, f"{name}-{stamp}")
     try:
         if os.path.isdir(path):
             shutil.copytree(path, backup)
         else:
             shutil.copy2(path, backup)
-        return backup
     except OSError:
         return ""
+    _prune_backups(folder, name)
+    return backup
+
+
+def _prune_backups(folder: str, name: str, keep: int = 10) -> None:
+    try:
+        entries = sorted(
+            entry for entry in os.listdir(folder) if entry.startswith(name + "-")
+        )
+    except OSError:
+        return
+    for entry in entries[:-keep]:
+        target = os.path.join(folder, entry)
+        try:
+            if os.path.isdir(target):
+                import shutil
+
+                shutil.rmtree(target, ignore_errors=True)
+            else:
+                os.unlink(target)
+        except OSError:
+            continue
+
+
+def _tidy_legacy_backups(root: str, stem: str) -> None:
+    """Move `<stem>.srm.pre-restore-…` files left in the save folder aside."""
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return
+    for name in names:
+        if ".pre-restore-" not in name.lower():
+            continue
+        source = os.path.join(root, name)
+        folder = os.path.join(root, ".rommarcade", "backups")
+        try:
+            os.makedirs(folder, exist_ok=True)
+            os.replace(source, os.path.join(folder, name))
+        except OSError:
+            continue
 
 
 def _save_public(row: dict[str, Any]) -> dict[str, Any]:

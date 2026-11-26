@@ -41,7 +41,7 @@ from rommarcade.emudeck import (
     sanitize_name,
 )
 from rommarcade.romm import RomMClient
-from rommarcade.saves import SyncState
+from rommarcade.saves import SyncState, local_saves
 from rommarcade.server import App, Server, Handler, _is_game_rom
 
 TOKEN = "rmm_testtoken"
@@ -55,6 +55,7 @@ class FakeRomM(BaseHTTPRequestHandler):
     save_mode = "absent"
     save_bytes = b"SAVE-FROM-SERVER"
     uploaded = []
+    upload_queries = []
     confirmed = []
     deleted = []
     flags = []
@@ -64,6 +65,7 @@ class FakeRomM(BaseHTTPRequestHandler):
         cls.save_mode = mode
         cls.save_bytes = b"SAVE-FROM-SERVER"
         cls.uploaded = []
+        cls.upload_queries = []
         cls.confirmed = []
         cls.deleted = []
         cls.flags = []
@@ -242,8 +244,20 @@ class FakeRomM(BaseHTTPRequestHandler):
         if path == "/api/saves":
             name, data = raw if isinstance(raw, tuple) else ("save.srm", b"")
             digest = hashlib.md5(data, usedforsecurity=False).hexdigest()
+            slot = (query.get("slot") or ["autosave"])[0]
+            overwrite = (query.get("overwrite") or ["false"])[0] == "true"
+            self.upload_queries.append({"slot": slot, "overwrite": overwrite,
+                                        "content_hash": digest, "name": name})
+            if not overwrite:
+                # RomM promotes a version that already holds these bytes instead
+                # of storing an identical copy again.
+                rows = [self.save_row()] + [entry["row"] for entry in self.uploaded]
+                existing = next((r for r in rows if r["slot"] == slot
+                                 and r["content_hash"] == digest), None)
+                if existing:
+                    return self._json(200, existing)
             row = self.save_row(
-                id=901, file_name=name or "save.srm", slot=(query.get("slot") or ["autosave"])[0],
+                id=901 + len(self.uploaded), file_name=name or "save.srm", slot=slot,
                 file_size_bytes=len(data), content_hash=digest,
                 is_favorite=False, labels=[], is_public=False,
             )
@@ -787,6 +801,9 @@ class SaveManagementTests(unittest.TestCase):
         for name in os.listdir(self.save_dir):
             path = os.path.join(self.save_dir, name)
             shutil.rmtree(path, ignore_errors=True) if os.path.isdir(path) else os.unlink(path)
+        state_file = os.path.join(os.environ["ROMARCADE_HOME"], "save-sync.json")
+        if os.path.exists(state_file):
+            os.unlink(state_file)
         self.app.save_sync.state = SyncState()
         for path in (self.marker, self.args_file):
             if os.path.exists(path):
@@ -843,8 +860,10 @@ class SaveManagementTests(unittest.TestCase):
             self.assertEqual(handle.read(), FakeRomM.save_bytes)
         self.assertTrue(self.wait_for_content(self.marker, FakeRomM.save_bytes),
                         "the emulator must start after the save is in place")
-        self.assertTrue(FakeRomM.uploaded, "the chosen save is promoted into the sync slot")
-        self.assertEqual(FakeRomM.uploaded[-1]["row"]["slot"], "autosave")
+        self.assertEqual(payload["uploaded"], 900, "the chosen version is promoted in place")
+        self.assertEqual(FakeRomM.uploaded, [], "an identical version is not stored again")
+        self.assertTrue(any(query["slot"] == "autosave" and not query["overwrite"]
+                            for query in FakeRomM.upload_queries))
         _, panel = self.call("/api/roms/180/saves")
         self.assertEqual(panel["playing"], "1942 (Japan, USA).srm")
         self.assertTrue(any(item["matches_local"] for item in panel["server"]))
@@ -878,6 +897,42 @@ class SaveManagementTests(unittest.TestCase):
         _, panel = self.call("/api/roms/180/saves")
         main = next(item for item in panel["local"] if item["main"])
         self.assertEqual(main["slot"], "before-boss")
+
+    def test_07_repeated_use_and_play_adds_no_saves(self):
+        FakeRomM.reset_saves("download")
+        status, first = self.call("/api/roms/180/saves/restore", "POST", {"save_id": 900})
+        self.assertEqual(status, 200, first)
+        _, panel = self.call("/api/roms/180/saves")
+        rows = len(panel["server"])
+        self.assertEqual(FakeRomM.uploaded, [], "the version is promoted, not duplicated")
+        status, second = self.call("/api/roms/180/saves/restore", "POST", {"save_id": 900})
+        self.assertEqual(status, 200, second)
+        _, panel = self.call("/api/roms/180/saves")
+        self.assertEqual(len(panel["server"]), rows, "a second Use must not add a version")
+        self.assertEqual(FakeRomM.uploaded, [])
+        self.assertEqual([item["name"] for item in panel["local"]],
+                         ["1942 (Japan, USA).srm"],
+                         "the pre-restore backup is hidden from the save list")
+
+    def test_08_after_play_skips_an_unchanged_save(self):
+        status, payload = self.call("/api/roms/180/saves/restore", "POST", {"save_id": 900})
+        self.assertEqual(status, 200, payload)
+        rom = self.app.rom_detail(180)
+        summary = self.app.save_sync.after_play(
+            rom, rom["mapping"], self.emu, self.app.client(), self.app.active_server()
+        )
+        self.assertEqual(summary["uploaded"], 0)
+        self.assertEqual(summary.get("skipped"), 1)
+        self.assertEqual(FakeRomM.uploaded, [])
+
+    def test_09_local_scan_ignores_our_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in ("Game.srm", "Game.srm.pre-restore-20261126-110357",
+                         "Game.srm.part", ".Game.srm.tmp"):
+                with open(os.path.join(tmp, name), "wb") as handle:
+                    handle.write(b"x")
+            os.makedirs(os.path.join(tmp, ".rommarcade", "backups"))
+            self.assertEqual([save.name for save in local_saves(tmp, "Game")], ["Game.srm"])
 
     def test_06_manage_flags_and_download(self):
         status, payload = self.call("/api/saves/900/favorite", "POST", {"is_favorite": True})

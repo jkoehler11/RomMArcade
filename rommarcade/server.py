@@ -1111,6 +1111,8 @@ class App:
             )
         except SaveSyncError as exc:
             raise HttpError(409, str(exc), save_sync=exc.summary) from None
+        except RomMError as exc:
+            raise HttpError(409 if exc.status == 409 else 502, str(exc)) from None
         if play:
             result["play"] = self._play(int(rom_id), False)
         return result
@@ -1124,6 +1126,8 @@ class App:
             )
         except SaveSyncError as exc:
             raise HttpError(409, str(exc), save_sync=exc.summary) from None
+        except RomMError as exc:
+            raise HttpError(409 if exc.status == 409 else 502, str(exc)) from None
 
     def set_rom_save_slot(self, rom_id: int, slot: str) -> dict[str, Any]:
         rom, mapping, emu_root = self._saves_context(rom_id)
