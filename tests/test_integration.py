@@ -35,6 +35,7 @@ from rommarcade.emudeck import (
     discover_launchers,
     find_platform_dir,
     library_roots,
+    mark_superseded,
     plan_library,
     platform_mapping,
     resolve_roots,
@@ -446,6 +447,17 @@ class UnitTests(unittest.TestCase):
             self.assertEqual(roots["mode"], "library")
             self.assertEqual(roots["roms_root"], os.path.join(library, "roms"))
             self.assertFalse(roots["detected"])
+
+    def test_superseded_duplicate_launcher(self):
+        launchers = [
+            {"id": "xenia", "name": "Xenia", "ready": True},
+            {"id": "xenia-emu", "name": "Xenia", "ready": False},
+            {"id": "melonds", "name": "melonDS", "ready": False},
+        ]
+        flags = {l["id"]: l["superseded"] for l in mark_superseded(launchers)}
+        self.assertFalse(flags["xenia"])
+        self.assertTrue(flags["xenia-emu"], "a dead variant beside a working launcher is not missing")
+        self.assertFalse(flags["melonds"], "a lone dead launcher is still a missing emulator")
 
     def test_proton_launcher_readiness(self):
         """EmuDeck's Xenia is a Proton .exe; it is installed without an AppImage."""

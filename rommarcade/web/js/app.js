@@ -2042,7 +2042,9 @@ async function renderEmudeck(token) {
     return;
   }
 
-  const dead = (emu?.launchers || []).filter((launcher) => !launcher.ready);
+  // A dead variant beside a working launcher for the same emulator (EmuDeck's
+  // xenia-emu next to xenia) is not a missing emulator.
+  const dead = (emu?.launchers || []).filter((launcher) => !launcher.ready && !launcher.superseded);
   const missing = platforms.filter((p) => p.is_game_platform !== false && Number(p.game_count ?? p.rom_count) > 0 && !p.local?.launcher);
   const warnings = [];
   if (dead.length) {
@@ -2381,7 +2383,9 @@ async function settingsEmulators(body, token) {
       );
       const launcherSelect = h("select", { class: "select", "aria-label": `Launcher for ${key}` },
         h("option", { value: "" }, "— none —"),
-        launchers.map((l) => h("option", { value: l.id, selected: l.id === entry.launcher }, `${l.name}${l.ready ? "" : " (missing)"}`)),
+        launchers
+          .filter((l) => !l.superseded || l.id === entry.launcher)
+          .map((l) => h("option", { value: l.id, selected: l.id === entry.launcher }, `${l.name}${l.ready ? "" : " (missing)"}`)),
       );
       const coreSelect = h("select", { class: "select", "aria-label": `Core for ${key}` },
         h("option", { value: "" }, "— auto —"),
@@ -2440,7 +2444,10 @@ async function settingsEmulators(body, token) {
             h("div", { class: "txt" }, h("div", { class: "t" }, "EmuDeck not found"),
               h("div", { class: "s" }, "Set a root below, or install EmuDeck and rescan.")),
           ),
-    h("div", { class: "launcher-chips" }, launchers.map((l) => h("span", { class: `launcher-chip ${l.ready ? "ready" : "dead"}`, title: l.path }, l.name))),
+    h("div", { class: "launcher-chips" },
+      launchers
+        .filter((l) => !l.superseded)
+        .map((l) => h("span", { class: `launcher-chip ${l.ready ? "ready" : "dead"}`, title: l.path }, l.name))),
     h("div", { class: "form-grid", style: { marginTop: "16px" } },
       h("div", { class: "field span" },
         h("label", { for: "emuRoot" }, "EmuDeck root override"),

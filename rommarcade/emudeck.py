@@ -595,6 +595,24 @@ def discover_launchers(launchers_root: str, available_cores: set[str], emulation
     return list(seen.values())
 
 
+def mark_superseded(launchers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Flag a broken launcher variant whose emulator has a working one.
+
+    EmuDeck can leave both ``xenia.sh`` (Proton, working) and ``xenia-emu.sh``
+    (an AppImage that is gone).  Both are named Xenia, so counting the broken
+    one as a missing emulator is a false warning and a duplicate in a picker.
+    """
+    ready_names = {
+        str(launcher.get("name") or "").strip().lower()
+        for launcher in launchers
+        if launcher.get("ready")
+    }
+    for launcher in launchers:
+        name = str(launcher.get("name") or "").strip().lower()
+        launcher["superseded"] = bool(not launcher.get("ready") and name and name in ready_names)
+    return launchers
+
+
 def discover_cores() -> list[str]:
     home = os.path.expanduser("~")
     roots = [
@@ -914,6 +932,7 @@ def detect(config: dict[str, Any] | None = None) -> dict[str, Any]:
     roots = resolve_roots(config)
     cores = discover_cores()
     launchers = discover_launchers(roots["launchers_root"], set(cores), roots["root"]) if roots["mode"] == "emudeck" else []
+    launchers = mark_superseded(launchers)
     rom_dirs = []
     if os.path.isdir(roots["roms_root"]):
         try:
