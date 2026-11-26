@@ -444,8 +444,40 @@ def create_library(plan: dict[str, Any], platforms: list[dict[str, Any]]) -> dic
     return {"created": created, "platforms": mapped}
 
 
-def _script_backend(path: str) -> str:
-    """What a launcher needs: a flatpak id, an AppImage path, or nothing."""
+def _resolve_script_token(token: str, emulation_root: str) -> str:
+    """Resolve the EmuDeck variables a launcher script puts in front of its binary."""
+    text = str(token or "").strip().strip("\"'")
+    home = os.path.expanduser("~")
+    variables = {
+        "${HOME}": home,
+        "$HOME": home,
+        "${romsPath}": os.path.join(emulation_root, "roms"),
+        "$romsPath": os.path.join(emulation_root, "roms"),
+        "${toolsPath}": os.path.join(emulation_root, "tools"),
+        "$toolsPath": os.path.join(emulation_root, "tools"),
+        "${biosPath}": os.path.join(emulation_root, "bios"),
+        "$biosPath": os.path.join(emulation_root, "bios"),
+        "${savesPath}": os.path.join(emulation_root, "saves"),
+        "$savesPath": os.path.join(emulation_root, "saves"),
+    }
+    if not emulation_root:
+        for key in [name for name in variables if "HOME" not in name]:
+            variables[key] = ""
+    for variable, value in variables.items():
+        if value:
+            text = text.replace(variable, value)
+    if not text or "$" in text or not os.path.isabs(text):
+        return ""
+    return os.path.normpath(text)
+
+
+def _script_backend(path: str, emulation_root: str = "") -> str:
+    """What a launcher needs: a flatpak id, an AppImage, or a Proton/Wine exe.
+
+    EmuDeck's Xenia launcher is a Proton wrapper around
+    ``roms/xbox360/xenia_canary.exe``; there is no AppImage or flatpak to find,
+    so readiness has to come from the executable the script names.
+    """
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as handle:
             text = handle.read(20000)
@@ -454,18 +486,35 @@ def _script_backend(path: str) -> str:
     match = re.search(r"flatpak\s+run\s+([A-Za-z0-9_.-]+)", text)
     if match:
         return "flatpak:" + match.group(1)
+    missing = ""
+    if re.search(r"proton-launch|\bwine\b", text, re.IGNORECASE):
+        for token in re.findall(r"""[^\s"']+\.exe\b""", text, re.IGNORECASE):
+            resolved = _resolve_script_token(token, emulation_root)
+            if not resolved:
+                continue
+            if os.path.exists(resolved):
+                return "proton:" + resolved
+            missing = missing or "proton:" + resolved
+        if missing:
+            return missing
     for line in text.splitlines():
         if "AppImage" in line:
-            for token in re.findall(r"[^\s\"']+\.AppImage", line):
-                if token.startswith("/"):
-                    return "appimage:" + token
-    return ""
+            for token in re.findall(r"""[^\s"']+\.AppImage""", line):
+                resolved = _resolve_script_token(token, emulation_root)
+                if not resolved:
+                    continue
+                if os.path.exists(resolved):
+                    return "appimage:" + resolved
+                missing = missing or "appimage:" + resolved
+    return missing
 
 
 def _backend_ready(backend: str, stem: str = "") -> bool:
     if not backend:
         return _launcher_binary_present(stem)
     kind, _, value = backend.partition(":")
+    if kind == "proton":
+        return os.path.exists(value)
     if kind == "appimage":
         return os.path.exists(value)
     if kind == "flatpak":
@@ -517,7 +566,7 @@ def _launcher_binary_present(stem: str) -> bool:
     return any(wanted in app.lower() for app in _flatpak_apps())
 
 
-def discover_launchers(launchers_root: str, available_cores: set[str]) -> list[dict[str, Any]]:
+def discover_launchers(launchers_root: str, available_cores: set[str], emulation_root: str = "") -> list[dict[str, Any]]:
     if not os.path.isdir(launchers_root):
         return []
     patterns = ["*.sh"]
@@ -534,7 +583,7 @@ def discover_launchers(launchers_root: str, available_cores: set[str]) -> list[d
         real = os.path.realpath(path)
         if real in {entry["real_path"] for entry in seen.values()}:
             continue
-        backend = _script_backend(real)
+        backend = _script_backend(real, emulation_root)
         seen[stem] = {
             "id": stem,
             "name": EMULATOR_LABELS.get(stem, stem.replace("-", " ").title()),
@@ -848,7 +897,7 @@ def detect(config: dict[str, Any] | None = None) -> dict[str, Any]:
             return _LAUNCHER_CACHE["data"]
     roots = resolve_roots(config)
     cores = discover_cores()
-    launchers = discover_launchers(roots["launchers_root"], set(cores)) if roots["mode"] == "emudeck" else []
+    launchers = discover_launchers(roots["launchers_root"], set(cores), roots["root"]) if roots["mode"] == "emudeck" else []
     rom_dirs = []
     if os.path.isdir(roots["roms_root"]):
         try:

@@ -29,7 +29,9 @@ from rommarcade.deeplink import DeepLinkQueue, parse_deeplink
 from rommarcade.emudeck import (
     ALIASES,
     choose_core,
+    choose_launcher,
     create_library,
+    discover_launchers,
     find_platform_dir,
     library_roots,
     plan_library,
@@ -289,6 +291,38 @@ class UnitTests(unittest.TestCase):
             self.assertEqual(roots["mode"], "library")
             self.assertEqual(roots["roms_root"], os.path.join(library, "roms"))
             self.assertFalse(roots["detected"])
+
+    def test_proton_launcher_readiness(self):
+        """EmuDeck's Xenia is a Proton .exe; it is installed without an AppImage."""
+        with tempfile.TemporaryDirectory() as tmp:
+            emu = os.path.join(tmp, "Emulation")
+            launchers = os.path.join(emu, "tools", "launchers")
+            xbox = os.path.join(emu, "roms", "xbox360")
+            os.makedirs(launchers)
+            os.makedirs(xbox)
+            exe = os.path.join(xbox, "xenia_canary.exe")
+            with open(exe, "wb") as handle:
+                handle.write(b"MZ")
+            script = os.path.join(launchers, "xenia.sh")
+            with open(script, "w", encoding="utf-8") as handle:
+                handle.write(
+                    "#!/usr/bin/env bash\n"
+                    '. "$HOME/.config/EmuDeck/backend/functions/all.sh"\n'
+                    'PROTONLAUNCH="${toolsPath}/proton-launch.sh"\n'
+                    'XENIA="$romsPath/xbox360/xenia_canary.exe"\n'
+                    '"${PROTONLAUNCH}" -p "Experimental" -- "${XENIA}" "${@}"\n'
+                )
+            os.chmod(script, 0o755)
+            found = discover_launchers(launchers, set(), emu)
+            entry = [item for item in found if item["id"] == "xenia"][0]
+            self.assertTrue(entry["ready"], entry)
+            self.assertTrue(entry["backend"].startswith("proton:"))
+            chosen = choose_launcher("xbox360", found) or {}
+            self.assertEqual(chosen.get("id"), "xenia")
+            os.unlink(exe)
+            found = discover_launchers(launchers, set(), emu)
+            entry = [item for item in found if item["id"] == "xenia"][0]
+            self.assertFalse(entry["ready"], entry)
 
 
 class IntegrationTests(unittest.TestCase):
