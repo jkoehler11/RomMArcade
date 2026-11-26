@@ -139,7 +139,7 @@ async function route() {
   try {
     if (current.name === "setup") await renderSetup();
     else if (current.name === "platform") await renderPlatform(current.args[0] || "", token);
-    else if (current.name === "game") await renderGame(current.args[0] || "", token);
+    else if (current.name === "game") await renderGame(current.args[0] || "", token, current.args[1] || "");
     else if (current.name === "installed") await renderInstalled(token);
     else if (current.name === "emudeck") await renderEmudeck(token);
     else if (current.name === "settings") await renderSettings(current.args[0] || "server", token);
@@ -462,7 +462,7 @@ function banner({ tone = "warn", title, text, action }) {
 }
 
 // ----------------------------------------------------------------- game ---
-async function renderGame(id, token) {
+async function renderGame(id, token, tab = "") {
   viewEl.replaceChildren(h("div", { class: "skel card", style: { height: "360px" } }));
   const [detail, installs, platforms, saves] = await Promise.all([
     api.rom(id), getInstalls(), getPlatforms(),
@@ -580,13 +580,16 @@ async function renderGame(id, token) {
     { id: "files", label: `Files · ${(rom.files || []).length}`, node: filePanel },
     ...(biosPanel ? [{ id: "bios", label: "BIOS", node: biosPanel.node }] : []),
   ];
-  if (state.gameTabRom !== rom.id) { state.gameTabRom = rom.id; state.gameTab = "overview"; }
+  const wantedTab = tab && tabDefs.some((entry) => entry.id === tab) ? tab : "";
+  if (wantedTab) { state.gameTabRom = rom.id; state.gameTab = wantedTab; }
+  else if (state.gameTabRom !== rom.id) { state.gameTabRom = rom.id; state.gameTab = "overview"; }
   let activeTab = state.gameTab || "overview";
   if (!tabDefs.some((tab) => tab.id === activeTab)) activeTab = "overview";
   const panelWrap = h("div");
   const tabBar = h("div", { class: "game-tabs" });
   const activate = (id) => {
     state.gameTab = id;
+    history.replaceState(null, "", `#/game/${rom.id}/${id}`);
     tabBar.querySelectorAll(".game-tab").forEach((el) => el.classList.toggle("active", el.dataset.tab === id));
     panelWrap.querySelectorAll(".game-panel").forEach((el) => el.classList.toggle("active", el.dataset.tab === id));
   };
@@ -1413,7 +1416,17 @@ function biosManagerBody(platform) {
     },
   });
 
-  const input = h("input", { type: "file", multiple: true, style: { flex: "1", minWidth: "0" } });
+  const choose = h("button", { class: "btn" }, icon("folder"), "Choose files");
+  const input = h("input", {
+    type: "file",
+    multiple: true,
+    style: { display: "none" },
+    onChange: (event) => {
+      const count = event.target.files?.length || 0;
+      choose.replaceChildren(icon("folder"), count ? `${count} file${count === 1 ? "" : "s"} chosen` : "Choose files");
+    },
+  });
+  choose.addEventListener("click", () => input.click());
   const upload = h("button", { class: "btn primary" }, icon("upload"), "Upload to RomM");
   upload.addEventListener("click", async () => {
     const files = Array.from(input.files || []);
@@ -1430,6 +1443,7 @@ function biosManagerBody(platform) {
       }
       toast(`Uploaded ${files.length} BIOS file${files.length === 1 ? "" : "s"} to RomM`, "good");
       input.value = "";
+      choose.replaceChildren(icon("folder"), "Choose files");
       await reload();
     } catch (error) { toast(error.message, "bad"); }
     finally { upload.disabled = false; }
@@ -1457,7 +1471,7 @@ function biosManagerBody(platform) {
     rommList,
     localTitle,
     localList,
-    h("div", { class: "row", style: { marginTop: "12px", gap: "10px" } }, input, upload),
+    h("div", { class: "row", style: { marginTop: "12px", gap: "10px" } }, choose, upload, input),
     h("p", { class: "note" },
       "Download copies a RomM file here; delete removes it from the machine or from RomM. Upload and delete need the firmware.write scope on your RomM client token."),
   );
