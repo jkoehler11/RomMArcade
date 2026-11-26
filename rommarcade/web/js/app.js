@@ -375,6 +375,7 @@ async function renderPlatform(slug, token) {
 
   const local = platform.local || {};
   const enabled = local.enabled !== false;
+  const needsBios = Boolean((local.bios_required || []).length || Number(platform.firmware_count) > 0);
   const gameCount = Number(platform.game_count ?? platform.rom_count) || 0;
   const mapped = Boolean(enabled && local.exists && local.launcher);
   const head = h("div", { class: "page-head" },
@@ -388,7 +389,7 @@ async function renderPlatform(slug, token) {
       ),
     ),
     h("div", { class: "page-actions" },
-      enabled && state.status?.emudeck?.usable
+      enabled && needsBios && state.status?.emudeck?.usable
         ? h("button", { class: "btn", onClick: () => openBiosManager(platform) }, icon("download"), "BIOS files")
         : null,
       h("select", {
@@ -491,6 +492,7 @@ async function renderGame(id, token) {
   const canPlay = Boolean(mapping.launcher && mapping.launcher_ready !== false);
   const missingEmulator = emuOn && Boolean(mapping.launcher) && mapping.launcher_ready === false;
   const missingEmuBios = !missingEmulator && emuOn ? (mapping.bios_missing || []) : [];
+  const needsBios = Boolean(platform && ((mapping.bios_required || []).length || Number(platform.firmware_count) > 0));
   const launcherName = mapping.launcher_name || mapping.launcher || "Emulator";
   const emuInstaller = state.status?.emudeck?.installer || "";
   const installJob = activeInstallJob(rom.id);
@@ -543,7 +545,7 @@ async function renderGame(id, token) {
   const filePanel = (rom.files || []).length
     ? fileListSection(rom.files)
     : h("p", { class: "note" }, "RomM did not list individual files for this game.");
-  const biosPanel = platform ? biosManagerBody(platform) : null;
+  const biosPanel = needsBios ? biosManagerBody(platform) : null;
   const tabDefs = [
     { id: "overview", label: "Overview", node: overviewPanel },
     { id: "saves", label: "Saves", node: savePanel },
