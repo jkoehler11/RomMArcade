@@ -799,6 +799,15 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(status, 200, payload)
         self.assertEqual(FakeRomM.firmware_deleted[-1], {"firmware": [900], "delete_from_fs": [900]})
 
+    def test_08c_local_bios_list_and_delete(self):
+        status, payload = self.call("/api/bios/local/13")
+        self.assertEqual(status, 200, payload)
+        names = [f["name"] for f in payload["files"]]
+        self.assertIn("bios.bin", names)
+        status, payload = self.call("/api/bios/local/delete", "POST", {"platform_id": 13, "name": "bios.bin"})
+        self.assertEqual(status, 200, payload)
+        self.assertNotIn("bios.bin", [f["name"] for f in payload["files"]])
+
     def test_09_deeplink_http(self):
         status, payload = self.call("/api/deeplink", "POST", {"url": "rommarcade://open?rom=180&play=1"})
         self.assertEqual(status, 200)

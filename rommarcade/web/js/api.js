@@ -63,6 +63,10 @@ export const api = {
     timeout: 180000,
   }),
   deleteFirmware: (id) => request(`/api/firmware/${Number(id)}/delete`, { method: "POST", body: {} }),
+  localBios: (platformId) => request(`/api/bios/local/${Number(platformId)}`),
+  deleteLocalBios: (platformId, name) => request("/api/bios/local/delete", {
+    method: "POST", body: { platform_id: Number(platformId), name },
+  }),
   emudeck: () => request("/api/emudeck", { timeout: 60000 }),
   library: () => request("/api/library", { timeout: 60000 }),
   saveLibrary: (body) => request("/api/library", { method: "POST", body, timeout: 60000 }),
@@ -75,7 +79,10 @@ export const api = {
   downloads: () => request("/api/downloads"),
   cancelDownload: (id) => request(`/api/downloads/${encodeURIComponent(id)}/cancel`, { method: "POST" }),
   install: (romId) => request("/api/install", { method: "POST", body: { rom_id: romId } }),
-  bios: (platformId) => request("/api/bios", { method: "POST", body: { platform_id: platformId } }),
+  bios: (platformId, firmwareId = null) => request("/api/bios", {
+    method: "POST",
+    body: { platform_id: platformId, ...(firmwareId ? { firmware_id: Number(firmwareId) } : {}) },
+  }),
   play: (romId, dryRun = false) => request("/api/play", { method: "POST", body: { rom_id: romId, dry_run: dryRun } }),
   deeplink: () => request("/api/deeplink"),
   pushDeeplink: (url) => request("/api/deeplink", { method: "POST", body: { url } }),

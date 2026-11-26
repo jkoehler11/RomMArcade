@@ -605,6 +605,67 @@ class App:
             "offset": offset,
         }
 
+    def bios_local(self, platform_id: int) -> dict[str, Any]:
+        cfg = self.config.get()
+        emu = detect_emudeck(cfg)
+        root = emu.get("bios_root") or ""
+        platform = self.resolve_platform(platform_id)
+        slug = str(platform.get("fs_slug") or platform.get("slug") or "")
+        mapping = platform_mapping(
+            platform, emu, emu.get("launchers") or [], emu.get("cores") or [],
+            (cfg.get("emudeck") or {}).get("overrides") or {},
+        )
+        folder = os.path.join(root, slug) if root and slug and os.path.isdir(os.path.join(root, slug)) else ""
+        files: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        if folder:
+            for name in sorted(os.listdir(folder)):
+                path = os.path.join(folder, name)
+                if os.path.isfile(path):
+                    files.append({"name": name, "path": path, "size": os.path.getsize(path)})
+                    seen.add(path)
+        for name in mapping.get("bios_required") or []:
+            path = os.path.join(root, name) if root else ""
+            if path and os.path.isfile(path) and path not in seen:
+                files.append({"name": name, "path": path, "size": os.path.getsize(path)})
+        return {"platform": slug, "folder": folder or root, "files": files}
+
+    def delete_bios_local(self, body: dict[str, Any]) -> dict[str, Any]:
+        platform_id = int(body.get("platform_id") or 0)
+        name = str(body.get("name") or "").strip()
+        if platform_id <= 0 or not name:
+            raise ConfigError("Choose a BIOS file to delete.")
+        if os.path.basename(name) != name or name in (".", ".."):
+            raise ConfigError("That is not a BIOS file name.")
+        cfg = self.config.get()
+        emu = detect_emudeck(cfg)
+        root = emu.get("bios_root") or ""
+        if not root:
+            raise EmuDeckError("No EmuDeck BIOS folder is set.")
+        platform = self.resolve_platform(platform_id)
+        slug = str(platform.get("fs_slug") or platform.get("slug") or "")
+        mapping = platform_mapping(
+            platform, emu, emu.get("launchers") or [], emu.get("cores") or [],
+            (cfg.get("emudeck") or {}).get("overrides") or {},
+        )
+        folder = os.path.join(root, slug) if slug and os.path.isdir(os.path.join(root, slug)) else root
+        if folder == root and name not in (mapping.get("bios_required") or []):
+            raise ConfigError(
+                "Only this emulator's required BIOS files can be deleted from the shared BIOS folder."
+            )
+        real_root = os.path.realpath(root)
+        path = os.path.realpath(os.path.join(folder, name))
+        try:
+            inside = os.path.commonpath([real_root, path]) == real_root
+        except ValueError:
+            inside = False
+        if not inside:
+            raise ConfigError("That file is outside the BIOS folder.")
+        if not os.path.isfile(path):
+            raise HttpError(404, f"{name} is not in the BIOS folder.")
+        os.unlink(path)
+        return self.bios_local(platform_id)
+
     def upload_firmware(self, body: dict[str, Any]) -> dict[str, Any]:
         platform_id = int(body.get("platform_id") or 0)
         file_name = str(body.get("file_name") or "").strip()
@@ -953,6 +1014,11 @@ class App:
                 raise HttpError(400, "A platform_id is required.")
             platform = self.resolve_platform(platform_id)
             firmware = self.firmware(platform_id)
+            firmware_id = int(data.get("firmware_id") or 0)
+            if firmware_id:
+                firmware = [item for item in firmware if int(item.get("id") or 0) == firmware_id]
+                if not firmware:
+                    raise HttpError(404, "No such BIOS file in RomM for this platform.")
             cfg = self.config.get()
             emu = detect_emudeck(cfg)
             jobs = self.downloads.enqueue_bios(platform, firmware, emu["bios_root"], self.client())
@@ -962,6 +1028,13 @@ class App:
                 "total": len(firmware),
                 "skipped": len(firmware) - len(jobs),
             }
+
+        match = re.fullmatch(r"/api/bios/local/(\d+)", path)
+        if method == "GET" and match:
+            return 200, JSON, self.bios_local(int(match.group(1)))
+
+        if route == ("POST", "/api/bios/local/delete"):
+            return 200, JSON, self.delete_bios_local(body or {})
 
         if route == ("POST", "/api/firmware/upload"):
             return 200, JSON, self.upload_firmware(body or {})
