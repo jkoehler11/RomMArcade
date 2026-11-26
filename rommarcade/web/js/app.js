@@ -2388,7 +2388,11 @@ async function settingsEmulators(body, token) {
         (!launcherIds || launcherIds.includes(l.id)) && (!l.superseded || l.id === entry.launcher));
       if (entry.launcher && !launcherOptions.some((l) => l.id === entry.launcher)) {
         const current = launchers.find((l) => l.id === entry.launcher);
-        if (current) launcherOptions.push(current);
+        launcherOptions.push(current || {
+          id: entry.launcher,
+          name: entry.launcher_name || entry.launcher,
+          ready: false,
+        });
       }
       const launcherSelect = h("select", { class: "select", "aria-label": `Launcher for ${key}` },
         h("option", { value: "" }, "— none —"),

@@ -100,7 +100,13 @@ STANDALONE: dict[str, list[str]] = {
     "n3ds": ["azahar", "lime3ds", "citra"],
     "switch": ["ryujinx", "sudachi", "yuzu"],
     "dreamcast": ["flycast"],
+    "xbox": ["xemu-emu", "xemu"],
     "xbox360": ["xenia-emu", "xenia"],
+    "ps3": ["rpcs3"],
+    "ps4": ["shadps4"],
+    "psvita": ["vita3k"],
+    "model2": ["model-2-emulator", "supermodel"],
+    "scummvm": ["scummvm"],
     "saturn": ["retroarch"],
     "arcade": ["retroarch"],
 }
@@ -171,6 +177,14 @@ EMULATOR_LABELS = {
     "flycast": "Flycast",
     "xenia-emu": "Xenia",
     "xenia": "Xenia",
+    "xemu-emu": "xemu",
+    "xemu": "xemu",
+    "rpcs3": "RPCS3",
+    "shadps4": "shadPS4",
+    "vita3k": "Vita3K",
+    "model-2-emulator": "Model 2 Emulator",
+    "supermodel": "Supermodel",
+    "scummvm": "ScummVM",
 }
 
 # Official project pages, used when EmuDeck cannot install the emulator for the
@@ -194,6 +208,13 @@ EMULATOR_WEBSITES = {
     "flycast": "https://github.com/flyinghead/flycast",
     "xenia": "https://xenia.jp/",
     "xenia-emu": "https://xenia.jp/",
+    "xemu-emu": "https://xemu.app/",
+    "xemu": "https://xemu.app/",
+    "rpcs3": "https://rpcs3.net/",
+    "shadps4": "https://shadps4.net/",
+    "vita3k": "https://vita3k.org/",
+    "supermodel": "https://www.supermodel3.com/",
+    "scummvm": "https://www.scummvm.org/",
 }
 
 _LAUNCHER_CACHE: dict[str, Any] = {"fingerprint": None, "data": None, "lock": threading.Lock()}
@@ -264,13 +285,24 @@ def resolve_roots(config: dict[str, Any] | None = None) -> dict[str, Any]:
             "library": library,
         }
     settings = _read_settings()
-    storage = str(emu_cfg.get("root") or settings.get("storagePath") or "").strip()
+    manual = str(emu_cfg.get("root") or "").strip()
+    settings_storage = str(settings.get("storagePath") or "").strip()
+    storage = manual or settings_storage
     candidates: list[str] = []
-    if emu_cfg.get("root"):
-        candidates.append(str(emu_cfg["root"]))
-    if storage:
-        candidates.append(os.path.join(storage, "Emulation"))
-        candidates.append(storage)
+    if manual:
+        if os.path.basename(os.path.abspath(manual)) == "Emulation":
+            # An explicit Emulation folder is a user decision; keep it.
+            candidates.append(manual)
+        else:
+            # A storage base, not a tree: EmuDeck puts the tree in
+            # <storagePath>/Emulation, and that is what its launchers use.
+            if settings_storage:
+                candidates.append(os.path.join(settings_storage, "Emulation"))
+            candidates.append(os.path.join(manual, "Emulation"))
+            candidates.append(manual)
+    elif settings_storage:
+        candidates.append(os.path.join(settings_storage, "Emulation"))
+        candidates.append(settings_storage)
     home = os.path.expanduser("~")
     candidates.extend(
         [
@@ -689,7 +721,20 @@ def choose_launcher(fs_slug: str, launchers: list[dict[str, Any]], cores: set[st
     for candidate in candidates:
         if candidate in available:
             return available[candidate]
-    if not candidates and "retroarch" in available:
+    if candidates:
+        # No launcher script at all: keep a stub so the mapping names the
+        # emulator (xemu, RPCS3, …) and the game page can offer to install it.
+        first = candidates[0]
+        return {
+            "id": first,
+            "name": EMULATOR_LABELS.get(first, first.replace("-", " ").title()),
+            "path": "",
+            "real_path": "",
+            "backend": "",
+            "ready": False,
+            "stub": True,
+        }
+    if "retroarch" in available:
         return available["retroarch"]
     return None
 
@@ -792,8 +837,19 @@ def rom_file(rom: dict[str, Any]) -> dict[str, Any] | None:
     return top[0]
 
 
+def is_multi_file(rom: dict[str, Any]) -> bool:
+    """True when the game is a tree, not one file.
+
+    RomM sets ``has_multiple_files`` for folders, but a single archive that
+    contains a whole game (an Xbox rip, for example) reports ``False`` while
+    its ``files`` list holds every member.  Either shape must install into a
+    directory and be extracted.
+    """
+    return bool(rom.get("has_multiple_files")) or len(rom.get("files") or []) > 1
+
+
 def rom_target_name(rom: dict[str, Any]) -> str:
-    if rom.get("has_multiple_files"):
+    if is_multi_file(rom):
         stem = rom.get("fs_name_no_ext") or rom.get("fs_name") or rom.get("name") or f"rom-{rom.get('id')}"
         return sanitize_name(stem)
     file_info = rom_file(rom) or {}

@@ -17,7 +17,7 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from .emudeck import EmuDeckError, bios_target, install_path, rom_file, sanitize_name
+from .emudeck import EmuDeckError, bios_target, install_path, is_multi_file, rom_file, sanitize_name
 from .state import StateStore
 
 
@@ -187,7 +187,7 @@ class DownloadManager:
         try:
             content_type = (response.headers.get("Content-Type") or "").lower()
             is_zip = "zip" in content_type or file_name.lower().endswith(".zip")
-            if rom.get("has_multiple_files") and is_zip:
+            if is_multi_file(rom) and is_zip:
                 self._download_zip(job, response, rom, dest, cancel)
             else:
                 self._download_file(job, response, dest, cancel)
@@ -210,7 +210,8 @@ class DownloadManager:
         self._log(f"bios {firmware.get('file_name')} -> {dest}")
 
     def _download_file(self, job: dict[str, Any], response, dest: str, cancel: threading.Event) -> None:
-        total = job.get("total") or int(response.headers.get("Content-Length") or 0)
+        header_total = int(response.headers.get("Content-Length") or 0)
+        total = job.get("total") or header_total
         self._update(job, total=total)
         part = dest + ".part"
         received = 0
@@ -232,6 +233,14 @@ class DownloadManager:
                     last_emit = now
             handle.flush()
             os.fsync(handle.fileno())
+        if header_total and received != header_total:
+            try:
+                os.unlink(part)
+            except OSError:
+                pass
+            raise EmuDeckError(
+                f"The download stopped early ({received} of {header_total} bytes); nothing was installed."
+            )
         os.replace(part, dest)
         self._update(job, received=received, speed=0.0)
 
@@ -262,7 +271,14 @@ class DownloadManager:
             except OSError:
                 pass
         os.makedirs(dest, exist_ok=True)
-        for entry in os.listdir(staging):
+        entries = os.listdir(staging)
+        if len(entries) == 1 and os.path.isdir(os.path.join(staging, entries[0])):
+            inner = os.path.join(staging, entries[0])
+            for entry in os.listdir(inner):
+                os.replace(os.path.join(inner, entry), os.path.join(staging, entry))
+            os.rmdir(inner)
+            entries = os.listdir(staging)
+        for entry in entries:
             source = os.path.join(staging, entry)
             target = os.path.join(dest, entry)
             if os.path.isdir(source):

@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -38,6 +39,8 @@ from rommarcade.emudeck import (
     mark_superseded,
     plan_library,
     platform_choices,
+    is_multi_file,
+    rom_target_name,
     platform_mapping,
     resolve_roots,
     sanitize_name,
@@ -472,6 +475,58 @@ class UnitTests(unittest.TestCase):
         unknown = platform_choices("mystery", launchers, cores)
         self.assertIn("retroarch", unknown["launchers"])
         self.assertEqual(unknown["cores"], ["mesen", "snes9x"])
+
+    def test_single_archive_game_is_a_folder(self):
+        jsrf = {
+            "id": 260,
+            "name": "Jet Set Radio Future",
+            "has_multiple_files": False,
+            "files": [
+                {"file_name": "default.xbe", "is_top_level": False},
+                {"file_name": "s_set_01a.adx", "is_top_level": False},
+            ],
+        }
+        self.assertTrue(is_multi_file(jsrf), "an archive of many files is a tree even when RomM says otherwise")
+        self.assertEqual(rom_target_name(jsrf), "Jet Set Radio Future")
+        single = {
+            "id": 180,
+            "has_multiple_files": False,
+            "files": [{"file_name": "1942 (Japan, USA).zip", "is_top_level": True}],
+        }
+        self.assertFalse(is_multi_file(single))
+        self.assertEqual(rom_target_name(single), "1942 (Japan, USA).zip")
+
+    def test_xbox_uses_xemu_not_retroarch(self):
+        launchers = [
+            {"id": "retroarch", "name": "RetroArch", "ready": True},
+            {"id": "xemu-emu", "name": "xemu", "ready": True},
+        ]
+        choices = platform_choices("xbox", launchers, ["mesen"])
+        self.assertEqual(choices["launchers"], ["xemu-emu"])
+        self.assertEqual(choices["cores"], [])
+        chosen = choose_launcher("xbox", launchers, {"mesen"})
+        self.assertEqual(chosen["id"], "xemu-emu")
+        only_retroarch = [{"id": "retroarch", "name": "RetroArch", "ready": True}]
+        stub = choose_launcher("xbox", only_retroarch, {"mesen"}) or {}
+        self.assertEqual(stub.get("id"), "xemu-emu")
+        self.assertTrue(stub.get("stub"))
+        self.assertFalse(stub.get("ready"))
+        self.assertEqual(platform_choices("xbox", only_retroarch, ["mesen"])["launchers"], [])
+
+    def test_storage_base_follows_emudeck_settings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            outer = os.path.join(tmp, "Emulation")
+            nested = os.path.join(outer, "Emulation")
+            for root in (outer, nested):
+                os.makedirs(os.path.join(root, "roms", "nes"))
+            with mock.patch("rommarcade.emudeck._read_settings", return_value={"storagePath": outer}):
+                roots = resolve_roots({"emudeck": {"root": tmp}})
+                self.assertEqual(
+                    roots["root"], nested,
+                    "a storage base must resolve to the tree EmuDeck's launchers use",
+                )
+                explicit = resolve_roots({"emudeck": {"root": outer}})
+                self.assertEqual(explicit["root"], outer, "an explicit Emulation folder wins")
 
     def test_superseded_duplicate_launcher(self):
         launchers = [
