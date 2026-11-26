@@ -490,6 +490,7 @@ async function renderGame(id, token) {
   const libraryMode = Boolean(library.configured) && !state.status?.emudeck?.detected;
   const canPlay = Boolean(mapping.launcher && mapping.launcher_ready !== false);
   const missingEmulator = emuOn && Boolean(mapping.launcher) && mapping.launcher_ready === false;
+  const missingEmuBios = !missingEmulator && emuOn ? (mapping.bios_missing || []) : [];
   const launcherName = mapping.launcher_name || mapping.launcher || "Emulator";
   const emuInstaller = state.status?.emudeck?.installer || "";
   const installJob = activeInstallJob(rom.id);
@@ -572,6 +573,15 @@ async function renderGame(id, token) {
                   : h("a", { class: "btn small", href: "#/emudeck" }, icon("settings"), "Emulator settings"),
               h("button", { class: "btn small ghost", onClick: (event) => rescanEmulator(event.currentTarget) }, icon("refresh"), "Rescan"),
             ),
+          )
+        : null,
+      missingEmuBios.length
+        ? h("div", { class: "bios-banner" },
+            icon("alert"),
+            h("div", { class: "txt" },
+              h("b", null, `${launcherName} needs BIOS files`),
+              h("div", null, `Missing ${missingEmuBios.join(" and ")} in ${mapping.bios_folder || "the EmuDeck BIOS folder"}. The emulator opens but cannot boot a game until these are present.`)),
+            h("button", { class: "btn small ghost", onClick: () => renderGame(id, state.renderToken) }, icon("refresh"), "Recheck"),
           )
         : null,
       emuOn && missingBios.length

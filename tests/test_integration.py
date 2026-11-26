@@ -40,6 +40,7 @@ from rommarcade.emudeck import (
     plan_library,
     platform_choices,
     is_multi_file,
+    missing_emulator_bios,
     rom_target_name,
     platform_mapping,
     resolve_roots,
@@ -513,6 +514,29 @@ class UnitTests(unittest.TestCase):
         self.assertFalse(stub.get("ready"))
         self.assertEqual(platform_choices("xbox", only_retroarch, ["mesen"])["launchers"], [])
 
+    def test_xemu_reports_missing_bios(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bios = os.path.join(tmp, "bios")
+            os.makedirs(bios)
+            self.assertEqual(
+                missing_emulator_bios("xemu-emu", bios),
+                ["mcpx_1.0.bin", "Complex_4627v1.03.bin"],
+            )
+            mapping = platform_mapping(
+                {"fs_slug": "xbox", "slug": "xbox"},
+                {"roms_root": os.path.join(tmp, "roms"), "bios_root": bios},
+                [{"id": "xemu-emu", "name": "xemu", "ready": True, "path": "/xemu"}],
+                [],
+                {},
+            )
+            self.assertEqual(mapping["launcher"], "xemu-emu")
+            self.assertEqual(mapping["bios_required"], ["mcpx_1.0.bin", "Complex_4627v1.03.bin"])
+            self.assertEqual(mapping["bios_missing"], ["mcpx_1.0.bin", "Complex_4627v1.03.bin"])
+            open(os.path.join(bios, "MCPX_1.0.BIN"), "w").close()
+            open(os.path.join(bios, "Complex_4627v1.03.bin"), "w").close()
+            self.assertEqual(missing_emulator_bios("xemu-emu", bios), [], "names match case-insensitively")
+            self.assertEqual(missing_emulator_bios("retroarch", bios), [])
+
     def test_storage_base_follows_emudeck_settings(self):
         with tempfile.TemporaryDirectory() as tmp:
             outer = os.path.join(tmp, "Emulation")
@@ -685,6 +709,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertTrue(rom["mapping"]["exists"])
         self.assertTrue(rom["mapping"]["launcher_ready"])
         self.assertEqual(rom["mapping"]["launcher_url"], "https://www.retroarch.com/")
+        self.assertEqual(rom["mapping"]["bios_missing"], [])
 
     def test_05_install_and_download(self):
         status, payload = self.call("/api/install", "POST", {"rom_id": 180})

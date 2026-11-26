@@ -217,6 +217,26 @@ EMULATOR_WEBSITES = {
     "scummvm": "https://www.scummvm.org/",
 }
 
+# BIOS files an emulator cannot boot without when RomM does not track them as
+# firmware.  Keyed by launcher id; the files live directly in the EmuDeck BIOS
+# folder (xemu resolves them from <bios>/mcpx_1.0.bin and <bios>/Complex_4627*.bin).
+EMULATOR_BIOS: dict[str, list[str]] = {
+    "xemu-emu": ["mcpx_1.0.bin", "Complex_4627v1.03.bin"],
+    "xemu": ["mcpx_1.0.bin", "Complex_4627v1.03.bin"],
+}
+
+
+def missing_emulator_bios(launcher_id: str, bios_root: str) -> list[str]:
+    required = EMULATOR_BIOS.get((launcher_id or "").lower(), [])
+    if not required:
+        return []
+    try:
+        present = {name.lower() for name in os.listdir(bios_root)} if bios_root else set()
+    except OSError:
+        present = set()
+    return [name for name in required if name.lower() not in present]
+
+
 _LAUNCHER_CACHE: dict[str, Any] = {"fingerprint": None, "data": None, "lock": threading.Lock()}
 _FLATPAK_CACHE: dict[str, Any] = {"at": 0.0, "apps": set()}
 # Launchers whose script finds a sidecar binary at runtime; an empty backend
@@ -812,6 +832,8 @@ def platform_mapping(
     core = override.get("core")
     if core is None:
         core = choose_core(fs_slug, set(cores)) if (launcher or {}).get("id") == "retroarch" else None
+    launcher_key = (launcher or {}).get("id") or ""
+    bios_root = roots.get("bios_root") or ""
     return {
         "platform": fs_slug,
         "slug": platform.get("slug"),
@@ -824,6 +846,9 @@ def platform_mapping(
         "launcher_path": (launcher or {}).get("path") or "",
         "launcher_ready": bool((launcher or {}).get("ready", False)),
         "launcher_url": EMULATOR_WEBSITES.get((launcher or {}).get("id") or "", ""),
+        "bios_required": EMULATOR_BIOS.get(launcher_key, []),
+        "bios_missing": missing_emulator_bios(launcher_key, bios_root),
+        "bios_folder": bios_root,
         "core": core or "",
         "source": "override" if override else ("alias" if directory and directory.lower() != fs_slug.lower() else "catalogue"),
     }
