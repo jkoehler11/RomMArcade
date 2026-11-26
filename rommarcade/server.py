@@ -43,6 +43,7 @@ from .emudeck import (
     invalidate_cache as invalidate_emudeck,
     library_roots,
     plan_library,
+    platform_choices,
     platform_mapping,
     remove_game_saves,
     rom_file,
@@ -363,16 +364,23 @@ class App:
         emu_cfg = cfg.get("emudeck", {})
         emu = detect_emudeck(cfg)
         platforms = []
+        options: dict[str, Any] = {}
         if self.active_server():
             try:
                 for platform in self.platforms():
                     platforms.append(platform["local"])
+                    if platform.get("is_game_platform") is False:
+                        continue
+                    key = str(platform.get("fs_slug") or platform.get("slug") or "")
+                    if key:
+                        options[key] = platform_choices(key, emu["launchers"], emu["cores"])
             except (RomMError, HttpError):
                 pass
         emu = dict(emu)
         emu["enabled"] = self.emudeck_enabled()
         emu["installer"] = _find_emudeck_installer()
         emu["platforms"] = platforms
+        emu["options"] = options
         emu["overrides"] = emu_cfg.get("overrides", {})
         return emu
 

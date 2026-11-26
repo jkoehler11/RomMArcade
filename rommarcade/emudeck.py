@@ -701,6 +701,43 @@ def choose_core(fs_slug: str, cores: set[str]) -> str | None:
     return None
 
 
+def platform_choices(fs_slug: str, launchers: list[dict[str, Any]], cores: list[str]) -> dict[str, Any]:
+    """The launchers and RetroArch cores that can actually run one system.
+
+    The mapping table used to offer every launcher and every installed core for
+    every platform, which invites DuckStation on a Mega Drive.  This is the same
+    knowledge ``choose_launcher`` uses, exposed for the picker.
+    """
+    key = (fs_slug or "").lower()
+    available = [launcher for launcher in launchers if not launcher.get("superseded")]
+    by_id = {launcher["id"]: launcher for launcher in available}
+    wanted: list[str] = []
+    for candidate in STANDALONE.get(key, []):
+        if candidate in by_id and candidate not in wanted:
+            wanted.append(candidate)
+    installed = set(cores)
+    core_names = [core for core in CORES.get(key, []) if core in installed]
+    if key not in CORES and key not in STANDALONE:
+        # An unknown system keeps every installed core: the list is a fallback,
+        # not a claim about what it can run.
+        core_names = sorted(installed)
+    if (
+        "retroarch" in by_id
+        and "retroarch" not in wanted
+        and (core_names or key not in STANDALONE)
+    ):
+        wanted.append("retroarch")
+    if not wanted and key not in STANDALONE:
+        # An unknown system has no rule to narrow by; a known one with nothing
+        # installed stays empty on purpose, so no invalid emulator is offered.
+        wanted = [launcher["id"] for launcher in available]
+    return {
+        "launchers": wanted,
+        "cores": core_names,
+        "core_launcher": "retroarch",
+    }
+
+
 def platform_mapping(
     platform: dict[str, Any],
     roots: dict[str, Any],

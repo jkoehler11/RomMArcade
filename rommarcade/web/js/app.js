@@ -2381,16 +2381,35 @@ async function settingsEmulators(body, token) {
         h("option", { value: "" }, "— unmapped —"),
         dirs.map((dir) => h("option", { value: dir, selected: dir === entry.dir }, dir)),
       );
+      const choices = (emu.options || {})[key] || {};
+      const launcherIds = Array.isArray(choices.launchers) ? choices.launchers : null;
+      const coreChoices = Array.isArray(choices.cores) ? choices.cores : cores;
+      const launcherOptions = launchers.filter((l) =>
+        (!launcherIds || launcherIds.includes(l.id)) && (!l.superseded || l.id === entry.launcher));
+      if (entry.launcher && !launcherOptions.some((l) => l.id === entry.launcher)) {
+        const current = launchers.find((l) => l.id === entry.launcher);
+        if (current) launcherOptions.push(current);
+      }
       const launcherSelect = h("select", { class: "select", "aria-label": `Launcher for ${key}` },
         h("option", { value: "" }, "— none —"),
-        launchers
-          .filter((l) => !l.superseded || l.id === entry.launcher)
-          .map((l) => h("option", { value: l.id, selected: l.id === entry.launcher }, `${l.name}${l.ready ? "" : " (missing)"}`)),
+        launcherOptions.map((l) => h("option", { value: l.id, selected: l.id === entry.launcher }, `${l.name}${l.ready ? "" : " (missing)"}`)),
       );
-      const coreSelect = h("select", { class: "select", "aria-label": `Core for ${key}` },
-        h("option", { value: "" }, "— auto —"),
-        cores.map((core) => h("option", { value: core, selected: core === entry.core }, core)),
-      );
+      const coreSelect = h("select", { class: "select", "aria-label": `Core for ${key}` });
+      let lastCore = entry.core || "";
+      const fillCores = () => {
+        const retro = launcherSelect.value === "retroarch";
+        const wanted = retro ? coreChoices : [];
+        coreSelect.replaceChildren(
+          h("option", { value: "" }, retro || !launcherSelect.value ? "— auto —" : "— not used —"),
+          ...wanted.map((core) => h("option", { value: core }, core)),
+        );
+        coreSelect.disabled = !retro;
+        coreSelect.title = retro
+          ? "RetroArch core for this system"
+          : "Only RetroArch takes a core; the standalone emulator brings its own";
+        coreSelect.value = retro && lastCore && wanted.includes(lastCore) ? lastCore : "";
+      };
+      fillCores();
       const save = async () => {
         try {
           await api.mapPlatform({ platform: key, dir: dirSelect.value, launcher: launcherSelect.value, core: coreSelect.value });
@@ -2399,8 +2418,8 @@ async function settingsEmulators(body, token) {
         } catch (error) { toast(error.message, "bad"); }
       };
       dirSelect.addEventListener("change", save);
-      launcherSelect.addEventListener("change", save);
-      coreSelect.addEventListener("change", save);
+      launcherSelect.addEventListener("change", async () => { fillCores(); await save(); });
+      coreSelect.addEventListener("change", () => { lastCore = coreSelect.value; save(); });
       return h("tr", null,
         h("td", { class: "platform" }, p.display_name || p.name || key, h("small", null, key)),
         h("td", null, dirSelect),

@@ -37,6 +37,7 @@ from rommarcade.emudeck import (
     library_roots,
     mark_superseded,
     plan_library,
+    platform_choices,
     platform_mapping,
     resolve_roots,
     sanitize_name,
@@ -448,6 +449,30 @@ class UnitTests(unittest.TestCase):
             self.assertEqual(roots["roms_root"], os.path.join(library, "roms"))
             self.assertFalse(roots["detected"])
 
+    def test_platform_choices_only_valid_emulators(self):
+        launchers = [
+            {"id": "retroarch", "name": "RetroArch", "ready": True},
+            {"id": "duckstation", "name": "DuckStation", "ready": True},
+            {"id": "xenia", "name": "Xenia", "ready": True},
+            {"id": "xenia-emu", "name": "Xenia", "ready": False, "superseded": True},
+            {"id": "melonds", "name": "melonDS", "ready": False},
+        ]
+        cores = ["mesen", "snes9x"]
+        nes = platform_choices("nes", launchers, cores)
+        self.assertEqual(nes["launchers"], ["retroarch"])
+        self.assertEqual(nes["cores"], ["mesen"])
+        xbox = platform_choices("xbox360", launchers, cores)
+        self.assertEqual(xbox["launchers"], ["xenia"])
+        self.assertEqual(xbox["cores"], [])
+        psx = platform_choices("psx", launchers, cores)
+        self.assertEqual(psx["launchers"], ["duckstation"])
+        self.assertEqual(psx["cores"], [])
+        switch = platform_choices("switch", launchers, cores)
+        self.assertEqual(switch["launchers"], [], "no Switch emulator is installed, so none is offered")
+        unknown = platform_choices("mystery", launchers, cores)
+        self.assertIn("retroarch", unknown["launchers"])
+        self.assertEqual(unknown["cores"], ["mesen", "snes9x"])
+
     def test_superseded_duplicate_launcher(self):
         launchers = [
             {"id": "xenia", "name": "Xenia", "ready": True},
@@ -586,6 +611,9 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(status, 200, payload)
         self.assertTrue(payload["detected"])
         self.assertTrue(payload["launchers"])
+        self.assertEqual(payload["options"]["nes"]["launchers"], ["retroarch"])
+        self.assertIn("mesen", payload["options"]["nes"]["cores"])
+        self.assertEqual(payload["options"]["switch"]["launchers"], [])
 
     def test_03_cover_proxy(self):
         request = urllib.request.Request(self.base + "/api/cover/180?size=small")
