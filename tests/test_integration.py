@@ -26,7 +26,16 @@ sys.path.insert(0, ROOT)
 from rommarcade import config as config_mod
 from rommarcade.config import ConfigStore, normalize_url
 from rommarcade.deeplink import DeepLinkQueue, parse_deeplink
-from rommarcade.emudeck import ALIASES, choose_core, find_platform_dir, sanitize_name
+from rommarcade.emudeck import (
+    ALIASES,
+    choose_core,
+    create_library,
+    find_platform_dir,
+    library_roots,
+    plan_library,
+    resolve_roots,
+    sanitize_name,
+)
 from rommarcade.romm import RomMClient
 from rommarcade.server import App, Server, Handler, _is_game_rom
 
@@ -229,6 +238,57 @@ class UnitTests(unittest.TestCase):
             ):
                 self.assertTrue(config_mod.config_dir().endswith("AppData/Roaming/RomMArcade"))
                 self.assertTrue(config_mod.data_dir().endswith("AppData/Local/RomMArcade"))
+
+    def test_library_plan_and_creation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plan = plan_library("romm", tmp)
+            self.assertEqual(plan["roms_root"], os.path.join(tmp, "roms"))
+            self.assertEqual(plan["bios_root"], os.path.join(tmp, "bios"))
+            result = create_library(
+                plan,
+                [
+                    {"fs_slug": "nes", "game_count": 2},
+                    {"fs_slug": "switch", "game_count": 1},
+                    {"fs_slug": "empty", "game_count": 0},
+                ],
+            )
+            self.assertEqual(sorted(result["created"]), ["nes", "switch"])
+            self.assertTrue(os.path.isdir(os.path.join(tmp, "roms", "nes")))
+            self.assertTrue(os.path.isdir(os.path.join(tmp, "bios")))
+            self.assertFalse(os.path.exists(os.path.join(tmp, "roms", "empty")))
+            # An existing alias-named folder is reused, never duplicated.
+            os.makedirs(os.path.join(tmp, "roms", "psx"))
+            result = create_library(plan, [{"fs_slug": "ps1", "game_count": 5}])
+            self.assertEqual(result["created"], [])
+            row = [item for item in result["platforms"] if item["platform"] == "ps1"][0]
+            self.assertEqual(row["dir"], "psx")
+
+    def test_library_roots_and_validation(self):
+        state = library_roots({"library": {"mode": "custom", "root": "/games/roms"}})
+        self.assertEqual(state["roms_root"], "/games/roms")
+        self.assertEqual(state["bios_root"], "/games/bios")
+        state = library_roots({"library": {"mode": "romm", "root": "/games"}})
+        self.assertEqual(state["roms_root"], "/games/roms")
+        self.assertEqual(state["bios_root"], "/games/bios")
+        with self.assertRaises(Exception):
+            plan_library("romm", "relative/folder")
+        with self.assertRaises(Exception):
+            plan_library("romm", "/")
+        with self.assertRaises(Exception):
+            plan_library("emudeck", "/games")
+
+    def test_library_overrides_emudeck_detection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            emu = os.path.join(tmp, "Emulation")
+            os.makedirs(os.path.join(emu, "roms"))
+            library = os.path.join(tmp, "RomM")
+            os.makedirs(os.path.join(library, "roms"))
+            roots = resolve_roots(
+                {"emudeck": {"root": emu}, "library": {"mode": "romm", "root": library}}
+            )
+            self.assertEqual(roots["mode"], "library")
+            self.assertEqual(roots["roms_root"], os.path.join(library, "roms"))
+            self.assertFalse(roots["detected"])
 
 
 class IntegrationTests(unittest.TestCase):
@@ -470,6 +530,124 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(payload["saves_removed"], 0)
         self.assertFalse(os.path.exists(os.path.join(self.emu, "roms/switch/Astral Chain")))
         self.assertTrue(os.path.exists(save_file))
+
+
+class LibraryIntegrationTests(unittest.TestCase):
+    """A laptop with a RomM server but no EmuDeck: mirror the server's layout."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="rommarcade-library-")
+        cls.previous_home = os.environ.get("HOME")
+        cls.fake = ThreadingHTTPServer(("127.0.0.1", 0), FakeRomM)
+        cls.fake_port = cls.fake.server_address[1]
+        threading.Thread(target=cls.fake.serve_forever, daemon=True).start()
+
+        os.environ["ROMARCADE_HOME"] = os.path.join(cls.tmp, "home")
+        os.environ["HOME"] = os.path.join(cls.tmp, "user")
+        os.makedirs(os.environ["HOME"], exist_ok=True)
+
+        cls.store = ConfigStore()
+        cls.store.add_server(f"http://127.0.0.1:{cls.fake_port}", {"mode": "token", "token": TOKEN})
+        cls.app = App(cls.store)
+        cls.httpd = Server(("127.0.0.1", 0), Handler, cls.app)
+        cls.port = cls.httpd.server_address[1]
+        threading.Thread(target=cls.httpd.serve_forever, daemon=True).start()
+        cls.base = f"http://127.0.0.1:{cls.port}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+        cls.app.downloads.shutdown()
+        cls.fake.shutdown()
+        cls.fake.server_close()
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+        os.environ.pop("ROMARCADE_HOME", None)
+        if cls.previous_home is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = cls.previous_home
+
+    def call(self, path, method="GET", body=None):
+        data = json.dumps(body).encode() if body is not None else None
+        request = urllib.request.Request(self.base + path, data=data, method=method,
+                                         headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                return response.status, json.loads(response.read() or b"{}")
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read() or b"{}")
+
+    def test_01_preview_before_setup(self):
+        status, payload = self.call("/api/library")
+        self.assertEqual(status, 200, payload)
+        self.assertFalse(payload["configured"])
+        self.assertTrue(payload["suggestions"]["romm"].endswith("RomM"))
+        rows = {row["platform"]: row for row in payload["platforms"]}
+        self.assertIn("nes", rows)
+        self.assertEqual(rows["nes"]["games"], 1)
+        self.assertEqual(rows["nes"]["folder"], "nes")
+        self.assertFalse(rows["nes"]["exists"])
+        _, status_payload = self.call("/api/status")
+        self.assertEqual(status_payload["emudeck"]["mode"], "")
+        self.assertFalse(status_payload["emudeck"]["detected"])
+        self.assertFalse(status_payload["emudeck"]["usable"])
+
+    def test_02_create_mirror_layout(self):
+        root = os.path.join(self.tmp, "RomM")
+        status, payload = self.call("/api/library", "POST", {"mode": "romm", "root": root})
+        self.assertEqual(status, 200, payload)
+        self.assertTrue(payload["library"]["configured"])
+        self.assertEqual(payload["library"]["roms_root"], os.path.join(root, "roms"))
+        self.assertEqual(payload["library"]["bios_root"], os.path.join(root, "bios"))
+        self.assertEqual(sorted(payload["created"]), ["nes", "switch"])
+        for sub in ("roms/nes", "roms/switch", "bios"):
+            self.assertTrue(os.path.isdir(os.path.join(root, sub)), sub)
+
+    def test_03_platforms_and_status_use_library(self):
+        status, payload = self.call("/api/platforms")
+        self.assertEqual(status, 200, payload)
+        by = {p["fs_slug"]: p for p in payload["platforms"]}
+        self.assertEqual(by["nes"]["local"]["dir"], "nes")
+        self.assertTrue(by["nes"]["local"]["exists"])
+        self.assertEqual(by["nes"]["local"]["launcher"], "")
+        _, status_payload = self.call("/api/status")
+        self.assertEqual(status_payload["emudeck"]["mode"], "library")
+        self.assertTrue(status_payload["emudeck"]["usable"])
+        self.assertFalse(status_payload["emudeck"]["detected"])
+        self.assertEqual(
+            status_payload["emudeck"]["library"]["roms_root"],
+            os.path.join(self.tmp, "RomM", "roms"),
+        )
+
+    def test_04_install_works_without_emudeck(self):
+        status, payload = self.call("/api/install", "POST", {"rom_id": 180})
+        self.assertEqual(status, 200, payload)
+        deadline = time.time() + 15
+        job = None
+        while time.time() < deadline:
+            _, downloads = self.call("/api/downloads")
+            job = [j for j in downloads["downloads"] if j["rom_id"] == 180][0]
+            if job["status"] in ("done", "error"):
+                break
+            time.sleep(0.1)
+        self.assertEqual(job["status"], "done", job)
+        target = os.path.join(self.tmp, "RomM", "roms/nes/1942 (Japan, USA).zip")
+        self.assertTrue(os.path.exists(target))
+        status, payload = self.call("/api/play", "POST", {"rom_id": 180})
+        self.assertEqual(status, 409)
+        self.assertIn("launcher", payload["error"].lower())
+
+    def test_05_clear_setup(self):
+        status, payload = self.call("/api/library", "POST", {"mode": "later"})
+        self.assertEqual(status, 200, payload)
+        self.assertFalse(payload["library"]["configured"])
+        # Clearing the choice must not delete folders or installed games.
+        self.assertTrue(os.path.isdir(os.path.join(self.tmp, "RomM", "roms", "nes")))
+        _, status_payload = self.call("/api/status")
+        self.assertEqual(status_payload["emudeck"]["mode"], "")
+        self.assertFalse(status_payload["emudeck"]["usable"])
 
 
 if __name__ == "__main__":

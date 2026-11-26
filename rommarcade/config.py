@@ -157,6 +157,11 @@ def default_config() -> dict[str, Any]:
             "launchers_root": "",
             "overrides": {},
         },
+        "library": {
+            "mode": "",
+            "root": "",
+            "bios_root": "",
+        },
         "ui": {"theme": "arcade", "sort": "name", "view": "grid"},
         "launch": {"detach": True, "keep_open": False},
         "downloads": {"concurrency": 2},
@@ -313,7 +318,7 @@ class ConfigStore:
 
     def update(self, patch: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
-            allowed = {"web", "emudeck", "ui", "launch", "downloads"}
+            allowed = {"web", "emudeck", "library", "ui", "launch", "downloads"}
             for key, value in (patch or {}).items():
                 if key in allowed and isinstance(value, dict):
                     self._data[key] = _merge(self._data.get(key, {}), value)

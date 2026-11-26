@@ -241,13 +241,33 @@ def _read_settings() -> dict[str, Any]:
 
 
 def resolve_roots(config: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Return the EmuDeck trees, honouring explicit config overrides."""
+    """Return the active game tree, honouring explicit config overrides.
+
+    Two kinds of tree can own the games: an EmuDeck ``Emulation`` folder, or a
+    plain library the user chose when EmuDeck is not installed on this machine.
+    An explicitly configured library wins over EmuDeck auto-detection: it is a
+    decision the user made, while detection is only a guess.
+    """
     config = config or {}
+    emu_cfg = config.get("emudeck") or {}
+    library = library_roots(config)
+    if library["root"]:
+        return {
+            "mode": "library",
+            "detected": False,
+            "storage_path": os.path.dirname(library["root"]),
+            "root": "",
+            "roms_root": library["roms_root"],
+            "bios_root": library["bios_root"],
+            "launchers_root": "",
+            "settings": _read_settings(),
+            "library": library,
+        }
     settings = _read_settings()
-    storage = str(config.get("root") or settings.get("storagePath") or "").strip()
+    storage = str(emu_cfg.get("root") or settings.get("storagePath") or "").strip()
     candidates: list[str] = []
-    if config.get("root"):
-        candidates.append(str(config["root"]))
+    if emu_cfg.get("root"):
+        candidates.append(str(emu_cfg["root"]))
     if storage:
         candidates.append(os.path.join(storage, "Emulation"))
         candidates.append(storage)
@@ -286,6 +306,7 @@ def resolve_roots(config: dict[str, Any] | None = None) -> dict[str, Any]:
                 break
     if not emulation_root:
         return {
+            "mode": "",
             "detected": False,
             "storage_path": storage,
             "root": "",
@@ -293,13 +314,15 @@ def resolve_roots(config: dict[str, Any] | None = None) -> dict[str, Any]:
             "bios_root": "",
             "launchers_root": "",
             "settings": settings,
+            "library": library,
         }
-    roms = str(config.get("roms_root") or os.path.join(emulation_root, "roms"))
-    bios = str(config.get("bios_root") or os.path.join(emulation_root, "bios"))
+    roms = str(emu_cfg.get("roms_root") or os.path.join(emulation_root, "roms"))
+    bios = str(emu_cfg.get("bios_root") or os.path.join(emulation_root, "bios"))
     launchers = str(
-        config.get("launchers_root") or os.path.join(emulation_root, "tools", "launchers")
+        emu_cfg.get("launchers_root") or os.path.join(emulation_root, "tools", "launchers")
     )
     return {
+        "mode": "emudeck",
         "detected": True,
         "storage_path": storage or os.path.dirname(emulation_root),
         "root": emulation_root,
@@ -307,7 +330,118 @@ def resolve_roots(config: dict[str, Any] | None = None) -> dict[str, Any]:
         "bios_root": bios,
         "launchers_root": launchers,
         "settings": settings,
+        "library": library,
     }
+
+
+def _library_root_value(raw: str) -> str:
+    return os.path.normpath(os.path.abspath(os.path.expanduser(str(raw or "").strip())))
+
+
+def library_roots(config: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Resolve the plain ``library`` config section into ROM and BIOS roots.
+
+    ``mode: romm`` is the server's own layout (``<root>/roms`` plus
+    ``<root>/bios``); ``mode: custom`` uses the folder itself for ROMs and a
+    sibling ``bios`` folder unless the user pointed at a ``roms`` folder.
+    """
+    library = (config or {}).get("library") or {}
+    mode = str(library.get("mode") or "").strip().lower()
+    raw = str(library.get("root") or "").strip()
+    root = _library_root_value(raw) if raw else ""
+    roms = ""
+    bios = ""
+    if root:
+        if mode == "romm":
+            roms = os.path.join(root, "roms")
+            bios = _library_root_value(library.get("bios_root")) if library.get("bios_root") else os.path.join(root, "bios")
+        else:
+            roms = root
+            if library.get("bios_root"):
+                bios = _library_root_value(library.get("bios_root"))
+            elif os.path.basename(root) == "roms":
+                bios = os.path.join(os.path.dirname(root), "bios")
+            else:
+                bios = os.path.join(root, "bios")
+    return {
+        "mode": mode if root else "",
+        "root": root,
+        "roms_root": roms,
+        "bios_root": bios,
+        "exists": bool(roms and os.path.isdir(roms)),
+    }
+
+
+def suggest_library_root(mode: str) -> str:
+    home = os.path.expanduser("~")
+    return os.path.join(home, "RomM" if str(mode or "").lower() == "romm" else "ROMs")
+
+
+def plan_library(mode: str, root: str) -> dict[str, Any]:
+    """Validate a requested layout and return the folders it would use."""
+    mode = str(mode or "").strip().lower()
+    if mode not in ("romm", "custom"):
+        raise EmuDeckError("Choose the RomM layout or a folder of your own.")
+    raw = str(root or "").strip()
+    if not raw:
+        raise EmuDeckError("Choose a folder for the game library.")
+    expanded = os.path.expanduser(raw)
+    if not os.path.isabs(expanded):
+        raise EmuDeckError("Use an absolute folder path, for example " + suggest_library_root(mode))
+    base = os.path.normpath(expanded)
+    if base == os.path.sep:
+        raise EmuDeckError("A library cannot be the filesystem root.")
+    if os.path.exists(base) and not os.path.isdir(base):
+        raise EmuDeckError(f"{base} is a file, not a folder.")
+    if mode == "romm":
+        roms = os.path.join(base, "roms")
+        bios = os.path.join(base, "bios")
+    else:
+        roms = base
+        bios = os.path.join(os.path.dirname(base), "bios") if os.path.basename(base) == "roms" else os.path.join(base, "bios")
+    return {"mode": mode, "root": base, "roms_root": roms, "bios_root": bios}
+
+
+def create_library(plan: dict[str, Any], platforms: list[dict[str, Any]]) -> dict[str, Any]:
+    """Create a library tree, one folder per RomM platform with games.
+
+    Existing folders win over new ones, including alias-named ones such as
+    ``psx`` for a ``ps1`` platform, so pointing at a collection the user
+    already has never duplicates it.
+    """
+    roms = str(plan.get("roms_root") or "")
+    bios = str(plan.get("bios_root") or "")
+    if not roms:
+        raise EmuDeckError("The library plan has no ROM folder.")
+    os.makedirs(roms, exist_ok=True)
+    if bios:
+        os.makedirs(bios, exist_ok=True)
+    existing = sorted(
+        name for name in os.listdir(roms) if os.path.isdir(os.path.join(roms, name))
+    )
+    created: list[str] = []
+    mapped: list[dict[str, Any]] = []
+    for platform in platforms:
+        if platform.get("is_game_platform") is False:
+            continue
+        games = int(platform.get("game_count") or platform.get("rom_count") or 0)
+        if games <= 0:
+            continue
+        slug = str(platform.get("fs_slug") or platform.get("slug") or "").strip()
+        if not slug:
+            continue
+        found = find_platform_dir(slug, roms, existing)
+        if found:
+            mapped.append({"platform": slug, "dir": found, "created": False})
+            continue
+        folder = slug if re.fullmatch(r"[A-Za-z0-9._-]+", slug) else sanitize_name(slug)
+        target = os.path.join(roms, folder)
+        if not os.path.isdir(target):
+            os.makedirs(target, exist_ok=True)
+            created.append(folder)
+        existing.append(folder)
+        mapped.append({"platform": slug, "dir": folder, "created": True})
+    return {"created": created, "platforms": mapped}
 
 
 def _script_backend(path: str) -> str:
@@ -565,8 +699,8 @@ def install_path(rom: dict[str, Any], mapping: dict[str, Any]) -> str:
     directory = mapping.get("path") or ""
     if not directory:
         raise EmuDeckError(
-            f"EmuDeck has no folder for {mapping.get('name') or 'this platform'}. "
-            "Choose one in Settings, Emulators."
+            f"No game folder is set for {mapping.get('name') or 'this platform'}. "
+            "Choose where games should be stored in Settings, Emulators."
         )
     return os.path.join(directory, rom_target_name(rom))
 
@@ -696,14 +830,16 @@ def spawn(command: list[str], log_file: str, env: dict[str, str] | None = None) 
 
 
 def detect(config: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Full EmuDeck snapshot, cheap enough to cache for a few seconds."""
+    """Full EmuDeck/library snapshot, cheap enough to cache for a few seconds."""
     config = config or {}
+    emu_cfg = config.get("emudeck") or {}
     fingerprint = json.dumps(
         {
             "settings_mtime": _mtime(emudeck_settings_path()),
-            "root": config.get("root"),
-            "roms": config.get("roms_root"),
-            "launchers": config.get("launchers_root"),
+            "root": emu_cfg.get("root"),
+            "roms": emu_cfg.get("roms_root"),
+            "launchers": emu_cfg.get("launchers_root"),
+            "library": config.get("library"),
         },
         sort_keys=True,
     )
@@ -712,9 +848,9 @@ def detect(config: dict[str, Any] | None = None) -> dict[str, Any]:
             return _LAUNCHER_CACHE["data"]
     roots = resolve_roots(config)
     cores = discover_cores()
-    launchers = discover_launchers(roots["launchers_root"], set(cores)) if roots["detected"] else []
+    launchers = discover_launchers(roots["launchers_root"], set(cores)) if roots["mode"] == "emudeck" else []
     rom_dirs = []
-    if roots["detected"] and os.path.isdir(roots["roms_root"]):
+    if os.path.isdir(roots["roms_root"]):
         try:
             rom_dirs = sorted(
                 name
@@ -723,13 +859,17 @@ def detect(config: dict[str, Any] | None = None) -> dict[str, Any]:
             )
         except OSError:
             rom_dirs = []
+    library = roots.get("library") or library_roots(config)
     data = {
-        "detected": roots["detected"],
+        "mode": roots["mode"],
+        "detected": roots["mode"] == "emudeck",
+        "usable": bool(roots["mode"]) and os.path.isdir(roots["roms_root"]),
         "storage_path": roots["storage_path"],
         "root": roots["root"],
         "roms_root": roots["roms_root"],
         "bios_root": roots["bios_root"],
         "launchers_root": roots["launchers_root"],
+        "library": {**library, "configured": bool(library.get("root"))},
         "settings_path": emudeck_settings_path(),
         "rom_dirs": rom_dirs,
         "launchers": launchers,

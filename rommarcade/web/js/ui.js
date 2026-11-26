@@ -178,6 +178,7 @@ export function gameCard(rom, { showPlay = true, eager = false } = {}) {
   const installed = Boolean(rom.installed);
   const job = rom.install_job || null;
   const installing = Boolean(job);
+  const canPlay = Boolean(rom.mapping?.launcher && rom.mapping?.launcher_ready !== false);
   const card = h("article", {
     class: `game-card ${installing || rom.installing ? "installing" : ""}`,
     dataset: { rom: rom.id },
@@ -210,16 +211,16 @@ export function gameCard(rom, { showPlay = true, eager = false } = {}) {
       title: installLabel(job),
       "aria-label": `${installLabel(job)}: ${rom.name}`,
     }, h("span", { class: "spinner", "aria-hidden": "true" })));
-  } else if (showPlay) {
+  } else if (showPlay && (!installed || canPlay)) {
     card.append(h("button", {
       class: "card-play",
       "data-stop": "",
-      title: installed ? "Play" : "Install and play",
+      title: installed ? "Play" : canPlay ? "Install and play" : "Install game",
       "aria-label": installed ? `Play ${rom.name}` : `Install ${rom.name}`,
       onClick: (event) => {
         event.stopPropagation();
         if (installed) window.dispatchEvent(new CustomEvent("rommarcade:play", { detail: { romId: rom.id } }));
-        else window.dispatchEvent(new CustomEvent("rommarcade:install", { detail: { romId: rom.id, play: true } }));
+        else window.dispatchEvent(new CustomEvent("rommarcade:install", { detail: { romId: rom.id, play: canPlay } }));
       },
     }, icon("play")));
   }
@@ -245,7 +246,8 @@ export function platformCard(platform, active = false) {
   const local = platform.local || {};
   const roms = Number(platform.game_count ?? platform.rom_count) || 0;
   const enabled = local.enabled !== false;
-  const mapped = Boolean(enabled && local.exists && local.launcher);
+  const mapped = Boolean(enabled && local.exists);
+  const launchable = Boolean(mapped && local.launcher);
   const slug = String(platform.fs_slug || platform.slug || "").toLowerCase();
   const normalized = Boolean(platform.logo_normalized);
   const boost = normalized ? 1 : (LOGO_BOOST[slug] || 1.55);
@@ -254,8 +256,10 @@ export function platformCard(platform, active = false) {
     class: `plat-card ${active ? "active" : ""}`,
     href: `#/platform/${encodeURIComponent(platform.fs_slug || platform.slug)}`,
     title: mapped
-      ? `${platform.display_name || platform.name}: ${local.launcher_name || local.launcher}${local.core ? " / " + local.core : ""}`
-      : `${platform.display_name || platform.name}: no EmuDeck folder or launcher mapped`,
+      ? launchable
+        ? `${platform.display_name || platform.name}: ${local.launcher_name || local.launcher}${local.core ? " / " + local.core : ""}`
+        : `${platform.display_name || platform.name}: game folder ready, no launcher on this machine`
+      : `${platform.display_name || platform.name}: no game folder mapped`,
   },
     h("div", { class: "plat-art" },
       platform.logo_url && !NO_LOGO.has(slug)
@@ -278,7 +282,7 @@ export function platformCard(platform, active = false) {
         h("div", { class: "plat-sub" },
           h("span", null, `${roms} game${roms === 1 ? "" : "s"}`),
           local.installed_count ? h("span", { class: "local" }, `${local.installed_count} local`) : null,
-          enabled ? h("span", { class: `plat-state ${mapped ? "ok" : "warn"}`, title: mapped ? "Mapped in EmuDeck" : "No EmuDeck mapping" }) : null,
+          enabled ? h("span", { class: `plat-state ${mapped ? "ok" : "warn"}`, title: mapped ? (launchable ? "Folder and launcher mapped" : "Game folder ready") : "No game folder mapped" }) : null,
         ),
       ),
       h("span", { class: "plat-go", "aria-hidden": "true" }, icon("arrow")),

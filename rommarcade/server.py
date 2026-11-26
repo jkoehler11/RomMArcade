@@ -37,14 +37,18 @@ from .emudeck import (
     EmuDeckError,
     bios_target,
     build_command,
+    create_library,
     detect as detect_emudeck,
     install_path,
     invalidate_cache as invalidate_emudeck,
+    library_roots,
+    plan_library,
     platform_mapping,
     remove_game_saves,
     rom_file,
     rom_target_name,
     spawn,
+    suggest_library_root,
 )
 from .romm import RomMClient, RomMError
 from .state import StateStore, ensure_dirs
@@ -170,7 +174,7 @@ class App:
         if not self.emudeck_enabled():
             raise HttpError(
                 409,
-                "EmuDeck integration is off. Turn it on in Settings, EmuDeck.",
+                "Installs and launches are turned off. Turn the EmuDeck integration back on in Settings, EmuDeck.",
             )
 
     # -- RomM data --------------------------------------------------------
@@ -233,7 +237,7 @@ class App:
             mapping = platform.get("local") or {}
         except HttpError:
             mapping = {}
-        emu = detect_emudeck(self.config.get().get("emudeck", {}))
+        emu = detect_emudeck(self.config.get())
         allowed = [mapping.get("path") or "", emu.get("roms_root") or ""]
         safe = False
         for base in allowed:
@@ -246,7 +250,7 @@ class App:
             except ValueError:
                 continue
         if not target or not safe:
-            raise HttpError(400, "Refusing to remove a path outside EmuDeck's ROM folders.")
+            raise HttpError(400, "Refusing to remove a path outside this machine's game folders.")
         target_is_file = os.path.isfile(target)
         stem = os.path.basename(target.rstrip(os.sep))
         if target_is_file:
@@ -286,7 +290,7 @@ class App:
         cfg = self.config.get()
         emu_cfg = cfg.get("emudeck", {})
         enabled = self.emudeck_enabled()
-        emu = detect_emudeck(emu_cfg)
+        emu = detect_emudeck(cfg)
         overrides = emu_cfg.get("overrides", {})
         installs = self.state.installs()
         counts: dict[str, int] = {}
@@ -354,7 +358,7 @@ class App:
     def emudeck_snapshot(self) -> dict[str, Any]:
         cfg = self.config.get()
         emu_cfg = cfg.get("emudeck", {})
-        emu = detect_emudeck(emu_cfg)
+        emu = detect_emudeck(cfg)
         platforms = []
         if self.active_server():
             try:
@@ -368,6 +372,89 @@ class App:
         emu["platforms"] = platforms
         emu["overrides"] = emu_cfg.get("overrides", {})
         return emu
+
+    def library_snapshot(self) -> dict[str, Any]:
+        """The plain game-folder setup, with one row per platform worth creating."""
+        cfg = self.config.get()
+        library = library_roots(cfg)
+        rows: list[dict[str, Any]] = []
+        if self.active_server():
+            try:
+                platforms = self.platforms()
+            except (RomMError, HttpError):
+                platforms = []
+            for platform in platforms:
+                if platform.get("is_game_platform") is False:
+                    continue
+                games = int(platform.get("game_count") or platform.get("rom_count") or 0)
+                if games <= 0:
+                    continue
+                slug = str(platform.get("fs_slug") or platform.get("slug") or "")
+                if not slug:
+                    continue
+                local = platform.get("local") or {}
+                rows.append(
+                    {
+                        "platform": slug,
+                        "name": platform.get("display_name") or platform.get("name") or slug,
+                        "games": games,
+                        "folder": local.get("dir") or slug,
+                        "dir": local.get("dir") or "",
+                        "path": local.get("path") or "",
+                        "exists": bool(local.get("exists")),
+                    }
+                )
+        return {
+            "mode": library["mode"],
+            "configured": bool(library["root"]),
+            "root": library["root"],
+            "roms_root": library["roms_root"],
+            "bios_root": library["bios_root"],
+            "exists": bool(library["exists"]),
+            "emudeck_detected": bool(detect_emudeck(cfg)["detected"]),
+            "suggestions": {
+                "romm": suggest_library_root("romm"),
+                "custom": suggest_library_root("custom"),
+            },
+            "platforms": rows,
+            "mapped": len([row for row in rows if row["exists"]]),
+        }
+
+    def save_library(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Create or clear the game folder layout and remember the choice."""
+        mode = str(body.get("mode") or "").strip().lower()
+        if mode in ("", "none", "later", "skip"):
+            self.config.update({"library": {"mode": "", "root": "", "bios_root": ""}})
+            invalidate_emudeck()
+            self._cache_clear()
+            self.log("cleared the game folder setup")
+            return {"library": self.library_snapshot(), "created": []}
+        plan = plan_library(mode, str(body.get("root") or ""))
+        platforms: list[dict[str, Any]] = []
+        if self.active_server():
+            try:
+                platforms = self.platforms()
+            except (RomMError, HttpError):
+                platforms = []
+        created: list[str] = []
+        if body.get("create", True):
+            created = create_library(plan, platforms)["created"]
+        self.config.update(
+            {
+                "library": {
+                    "mode": plan["mode"],
+                    "root": plan["root"],
+                    "bios_root": plan["bios_root"],
+                }
+            }
+        )
+        invalidate_emudeck()
+        self._cache_clear()
+        self.log(
+            f"game library {plan['mode']} -> {plan['roms_root']} "
+            f"({len(created)} folders created)"
+        )
+        return {"library": self.library_snapshot(), "created": created}
 
     def rom_detail(self, rom_id: int, use_cache: bool = True) -> dict[str, Any]:
         key = f"rom:{self.config.get().get('active_server')}:{int(rom_id)}"
@@ -513,7 +600,7 @@ class App:
         except RomMError:
             items = []
         cfg = self.config.get()
-        emu = detect_emudeck(cfg.get("emudeck", {}))
+        emu = detect_emudeck(cfg)
         out = []
         for item in items:
             target = bios_target(item, emu["bios_root"]) if emu["bios_root"] else ""
@@ -586,7 +673,7 @@ class App:
 
         if route == ("GET", "/api/status"):
             cfg = self.config.get()
-            emu = detect_emudeck(cfg.get("emudeck", {}))
+            emu = detect_emudeck(cfg)
             return 200, JSON, {
                 "product": PRODUCT,
                 "version": __version__,
@@ -595,11 +682,17 @@ class App:
                 "server": self.server_status(),
                 "emudeck": {
                     "enabled": self.emudeck_enabled(),
+                    "mode": emu["mode"],
                     "detected": bool(emu["detected"]),
+                    "usable": bool(emu["usable"]),
                     "root": emu["root"],
                     "installer": _find_emudeck_installer(),
                     "launchers": len([l for l in emu["launchers"] if l.get("ready")]),
                     "platforms": len(emu["platforms"]) if "platforms" in emu else 0,
+                    "library": {
+                        key: emu["library"].get(key)
+                        for key in ("mode", "root", "roms_root", "bios_root", "configured", "exists")
+                    },
                 },
                 "web_port": int(cfg.get("web", {}).get("port") or 8790),
                 "device_identifier": self._device_identifier,
@@ -711,6 +804,12 @@ class App:
             self._cache_clear()
             return 200, JSON, self.emudeck_snapshot()
 
+        if route == ("GET", "/api/library"):
+            return 200, JSON, self.library_snapshot()
+
+        if route == ("POST", "/api/library"):
+            return 200, JSON, self.save_library(body if isinstance(body, dict) else {})
+
         if route == ("GET", "/api/installs"):
             return 200, JSON, {"installs": self.game_installs(), "history": self.game_history(20)}
 
@@ -748,8 +847,8 @@ class App:
             if not mapping.get("path"):
                 raise HttpError(
                     409,
-                    f"EmuDeck has no folder for {rom.get('platform_name') or 'this platform'}. "
-                    "Set one in Settings, Emulators.",
+                    f"No game folder is set for {rom.get('platform_name') or 'this platform'}. "
+                    "Choose where games should be stored in Settings, Emulators.",
                 )
             job = self.downloads.enqueue_rom(rom, mapping, self.client())
             return 200, JSON, {"download": job}
@@ -763,7 +862,7 @@ class App:
             platform = self.resolve_platform(platform_id)
             firmware = self.firmware(platform_id)
             cfg = self.config.get()
-            emu = detect_emudeck(cfg.get("emudeck", {}))
+            emu = detect_emudeck(cfg)
             jobs = self.downloads.enqueue_bios(platform, firmware, emu["bios_root"], self.client())
             return 200, JSON, {
                 "downloads": jobs,
@@ -856,13 +955,13 @@ class App:
             else:
                 server = active
             self._cache_clear()
-        for key in ("emudeck", "ui", "launch", "downloads", "web"):
+        for key in ("emudeck", "library", "ui", "launch", "downloads", "web"):
             if key in body and isinstance(body[key], dict):
                 self.config.update({key: body[key]})
         if body.get("active_server"):
             self.config.activate_server(str(body["active_server"]))
             self._cache_clear()
-        if "emudeck" in body:
+        if "emudeck" in body or "library" in body:
             invalidate_emudeck()
             self._cache_clear()
         return {"config": self.config.masked(), "status": self.server_status(fresh=True)}

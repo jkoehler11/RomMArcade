@@ -77,7 +77,7 @@ class DownloadManager:
 
     def enqueue_bios(self, platform: dict[str, Any], firmware: list[dict[str, Any]], bios_root: str, client) -> list[dict[str, Any]]:
         if not bios_root:
-            raise EmuDeckError("EmuDeck's BIOS folder was not found.")
+            raise EmuDeckError("No BIOS folder is set on this machine. Choose where games should be stored first.")
         created = []
         for item in firmware:
             target = bios_target(item, bios_root)

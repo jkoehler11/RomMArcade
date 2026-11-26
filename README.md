@@ -5,7 +5,9 @@
 RomMArcade is a desktop app for [RomM](https://github.com/rommapp/romm) (and its ROMulus fork)
 built around two ideas: a server is a **URL**, and EmuDeck already knows how to play. It browses
 your RomM library, installs games into EmuDeck's own ROM folders, downloads BIOS, and starts
-EmuDeck's launchers — no second emulator configuration to keep in sync.
+EmuDeck's launchers — no second emulator configuration to keep in sync. On a machine without
+EmuDeck it can still create a game library that mirrors the server's own folder layout, and hands
+launching back to EmuDeck the moment it appears.
 
 It runs as a native window on Linux, macOS and Windows, with the same Python service and vanilla
 JavaScript UI behind it. There is no database and no browser tab; the window is the app.
@@ -33,6 +35,10 @@ RomM server  ──HTTP──▶  RomMArcade  ──files──▶  ~/Emulation/
   browse-only RomM library.
 - **EmuDeck-native installs.** ROMs go to the EmuDeck folder for their platform. Multi-file ROMs
   arrive as a folder. BIOS downloads keep RomM's `bios/…` layout inside `~/Emulation/bios`.
+- **Machines without EmuDeck still get a library.** If there is no EmuDeck tree on this computer,
+  the setup asks where games should live: mirror the RomM server's own layout
+  (`<root>/roms/<system>` and `<root>/bios`) or create one in a folder of your choice, with a
+  **Set up later** option that keeps the app browse-only until you decide.
 - **EmuDeck-native launches.** RomMArcade runs the same launcher scripts EmuDeck writes
   (`retroarch.sh`, `dolphin-emu.sh`, `duckstation.sh`, `pcsx2-qt.sh`, `melonds.sh`, `azahar.sh`,
   `cemu.sh`, `flycast.sh`, …), passing a RetroArch core when the system needs one.
@@ -48,7 +54,8 @@ RomM server  ──HTTP──▶  RomMArcade  ──files──▶  ~/Emulation/
 ## Install
 
 Requirements: Linux, macOS or Windows; Python 3.10+ only if building from source. EmuDeck is
-needed for installing and launching games, and RomM 5.x or ROMulus is the server side.
+needed for launching games; without it RomMArcade can still install into a game library that
+mirrors your RomM server. RomM 5.x or ROMulus is the server side.
 
 Prebuilt installers are produced by the `desktop` GitHub Actions workflow and published on the
 [Releases](../../releases) page. Download the installer for your platform:
@@ -85,8 +92,8 @@ Run the app:
 rommarcade app
 ```
 
-The setup wizard is the same: enter the RomM address, pair or paste a token, confirm EmuDeck, and
-you are in.
+The setup wizard is the same: enter the RomM address, pair or paste a token, then either confirm
+the EmuDeck it found or choose where games should live. You are in either way.
 
 Config and data are per installation:
 
@@ -184,6 +191,25 @@ arcade, …) and falls back to the launcher's own default if none is found.
 Launches are detached from the service and inherit the graphical session (`XDG_RUNTIME_DIR`,
 `WAYLAND_DISPLAY` by socket discovery), so closing the browser does not close the game.
 
+**Machines without EmuDeck.** A laptop that never ran EmuDeck has no `Emulation` tree, so the EmuDeck
+step of the wizard becomes a game-folder step instead. It offers two layouts and a way to defer:
+
+- **Same as my RomM server** — mirrors the server's own library layout under a root you pick,
+  usually `~/RomM`: `roms/<fs_slug>/` per platform and `bios/`. The platform folder names come from
+  the server, so the local library reads exactly like the server's.
+- **My own folder** — one folder per platform directly inside a folder you choose (`~/ROMs/nes`,
+  `~/ROMs/switch`, …) with a `bios/` sibling.
+- **Set up later** — finish onboarding browse-only. The library page keeps a *No game folders yet*
+  strip, and the EmuDeck page offers the same chooser whenever you want to come back.
+
+Only platforms that have games on the server get a folder, and existing folders win: a collection
+that already uses EmuDeck names (`psx` for `ps1`, `gc` for `ngc`) is reused rather than duplicated.
+Installs, uninstall and BIOS downloads work in this mode. **Launching still needs EmuDeck** — the
+game page says so, Play is disabled rather than failing, and card buttons install without the
+"play" half. Naming an EmuDeck root in **Settings → EmuDeck** (or installing EmuDeck and rescanning)
+switches the app back to EmuDeck's folders; a configured game folder takes precedence over
+auto-detection, so the choice is always explicit.
+
 **What RomMArcade does not do (yet):** save/state sync, Steam shortcut creation, ROM patching,
 and multi-disc conversion. Those remain EmuDeck/RomM's business; this app deliberately keeps its
 hands off files it did not create.
@@ -191,13 +217,14 @@ hands off files it did not create.
 ## Development
 
 ```bash
-python3 -m unittest tests.test_integration -v   # 22 tests, no network
+python3 -m unittest tests.test_integration -v   # 31 tests, no network
 ROMARCADE_HOME=/tmp/rommarcade-dev python3 -m rommarcade serve --port 8791
 ```
 
-The test suite starts a fake RomM server and a throwaway EmuDeck tree, then exercises pairing,
-browsing, the games-only filter, cover caching, installs (single-file and multi-file zip), BIOS,
-launching, the EmuDeck on/off switch, and the deep-link queue end to end.
+The test suite starts a fake RomM server, a throwaway EmuDeck tree, and a laptop-style game-folder
+setup, then exercises pairing, browsing, the games-only filter, cover caching, installs
+(single-file and multi-file zip), the mirrored RomM folder layout, BIOS, launching, the EmuDeck
+on/off switch, and the deep-link queue end to end.
 
 Layout:
 
