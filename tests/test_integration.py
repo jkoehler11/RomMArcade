@@ -35,6 +35,7 @@ from rommarcade.emudeck import (
     find_platform_dir,
     library_roots,
     plan_library,
+    platform_mapping,
     resolve_roots,
     sanitize_name,
 )
@@ -313,12 +314,30 @@ class UnitTests(unittest.TestCase):
                     '"${PROTONLAUNCH}" -p "Experimental" -- "${XENIA}" "${@}"\n'
                 )
             os.chmod(script, 0o755)
+            emu_script = os.path.join(launchers, "xenia-emu.sh")
+            with open(emu_script, "w", encoding="utf-8") as handle:
+                handle.write(
+                    "#!/usr/bin/env bash\n"
+                    'XENIA="$HOME/Applications/NoSuchXeniaVariant.AppImage"\n'
+                    '"$XENIA" "${@}"\n'
+                )
+            os.chmod(emu_script, 0o755)
             found = discover_launchers(launchers, set(), emu)
             entry = [item for item in found if item["id"] == "xenia"][0]
             self.assertTrue(entry["ready"], entry)
             self.assertTrue(entry["backend"].startswith("proton:"))
+            self.assertFalse([item for item in found if item["id"] == "xenia-emu"][0]["ready"])
             chosen = choose_launcher("xbox360", found) or {}
             self.assertEqual(chosen.get("id"), "xenia")
+            mapping = platform_mapping(
+                {"fs_slug": "xbox360", "slug": "xbox360"},
+                {"roms_root": os.path.join(emu, "roms")},
+                found,
+                [],
+                {"xbox360": {"dir": "xbox360", "launcher": "xenia-emu"}},
+            )
+            self.assertEqual(mapping["launcher"], "xenia")
+            self.assertTrue(mapping["launcher_ready"])
             os.unlink(exe)
             found = discover_launchers(launchers, set(), emu)
             entry = [item for item in found if item["id"] == "xenia"][0]

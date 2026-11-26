@@ -703,6 +703,12 @@ def platform_mapping(
         launcher = next((l for l in launchers if l["id"] == launcher_id), None)
     if launcher is None:
         launcher = choose_launcher(fs_slug, launchers, set(cores))
+    elif not launcher.get("ready", False):
+        # A stored preference for a variant EmuDeck left incomplete (the
+        # AppImage Xenia, say) must not hide a working sibling launcher.
+        fallback = choose_launcher(fs_slug, launchers, set(cores))
+        if fallback is not None and fallback.get("ready", False):
+            launcher = fallback
     core = override.get("core")
     if core is None:
         core = choose_core(fs_slug, set(cores)) if (launcher or {}).get("id") == "retroarch" else None
