@@ -278,7 +278,10 @@ class App:
         removed_saves: list[str] = []
         if remove_saves and emu.get("detected"):
             platform_dir = str(mapping.get("dir") or entry.get("platform_slug") or entry.get("platform") or "")
-            removed_saves = remove_game_saves(emu.get("root") or "", platform_dir, stem)
+            removed_saves = remove_game_saves(
+                emu.get("root") or "", platform_dir, stem,
+                str(mapping.get("launcher") or ""),
+            )
         self.state.forget(int(rom_id))
         self._cache_clear()
         self.log(

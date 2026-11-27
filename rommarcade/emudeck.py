@@ -1370,10 +1370,23 @@ def bios_target(firmware: dict[str, Any], bios_root: str) -> str:
     return os.path.join(bios_root, *parts, file_name)
 
 
-def save_roots(emulation_root: str, platform_dir: str) -> list[str]:
-    """EmuDeck's per-game save and save-state folders for one platform."""
+def save_roots(emulation_root: str, platform_dir: str, launcher: str = "") -> list[str]:
+    """The emulator's own save and save-state folders for one platform."""
+    if not emulation_root:
+        return []
+    launcher = (launcher or "").casefold()
+    if launcher == "retroarch":
+        return [
+            os.path.join(emulation_root, "saves", "retroarch", "saves"),
+            os.path.join(emulation_root, "states", "retroarch", "states"),
+        ]
+    if launcher == "melonds":
+        return [
+            os.path.join(emulation_root, "saves", "melonds", "saves"),
+            os.path.join(emulation_root, "states", "melonds", "states"),
+        ]
     directory = sanitize_name(platform_dir or "")
-    if not emulation_root or not directory:
+    if not directory:
         return []
     return [
         os.path.join(emulation_root, "saves", directory),
@@ -1396,7 +1409,7 @@ def matches_rom_stem(name: str, stem: str) -> bool:
     return bool(name and stem) and _save_matches(name, stem)
 
 
-def remove_game_saves(emulation_root: str, platform_dir: str, rom_stem: str) -> list[str]:
+def remove_game_saves(emulation_root: str, platform_dir: str, rom_stem: str, launcher: str = "") -> list[str]:
     """Remove save files and states whose names belong to one installed ROM.
 
     Only immediate children of EmuDeck's saves/states folders are touched, and
@@ -1407,7 +1420,7 @@ def remove_game_saves(emulation_root: str, platform_dir: str, rom_stem: str) -> 
     stem = sanitize_name(rom_stem or "")
     if not stem:
         return removed
-    for root in save_roots(emulation_root, platform_dir):
+    for root in save_roots(emulation_root, platform_dir, launcher):
         if not os.path.isdir(root):
             continue
         for name in os.listdir(root):

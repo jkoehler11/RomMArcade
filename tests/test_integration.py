@@ -28,6 +28,7 @@ sys.path.insert(0, ROOT)
 from rommarcade import config as config_mod
 from rommarcade.config import ConfigStore, normalize_url
 from rommarcade.deeplink import DeepLinkQueue, parse_deeplink
+from rommarcade.saves import save_root, save_unsupported_reason
 from rommarcade.emudeck import (
     ALIASES,
     EmuDeckError,
@@ -1082,8 +1083,8 @@ class IntegrationTests(unittest.TestCase):
             self.call("/api/config", "PUT", {"emudeck": {"enabled": True}})
 
     def test_14_uninstall_with_saves(self):
-        saves = os.path.join(self.emu, "saves/nes")
-        states = os.path.join(self.emu, "states/nes")
+        saves = os.path.join(self.emu, "saves/retroarch/saves")
+        states = os.path.join(self.emu, "states/retroarch/states")
         os.makedirs(saves, exist_ok=True)
         os.makedirs(states, exist_ok=True)
         save_file = os.path.join(saves, "1942 (Japan, USA).srm")
@@ -1133,9 +1134,9 @@ class SaveManagementTests(unittest.TestCase):
         open(os.path.join(os.environ["HOME"], ".var/app/org.libretro.RetroArch/config/retroarch/cores/mesen_libretro.so"), "w").close()
 
         cls.emu = os.path.join(cls.tmp, "Emulation")
-        for sub in ("roms/nes", "saves/nes", "bios", "tools/launchers"):
+        for sub in ("roms/nes", "saves/retroarch/saves", "bios", "tools/launchers"):
             os.makedirs(os.path.join(cls.emu, sub), exist_ok=True)
-        cls.save_dir = os.path.join(cls.emu, "saves/nes")
+        cls.save_dir = os.path.join(cls.emu, "saves/retroarch/saves")
         cls.marker = os.path.join(cls.tmp, "launch-save.txt")
         cls.args_file = os.path.join(cls.tmp, "launcher-args.txt")
         launcher = os.path.join(cls.emu, "tools/launchers/retroarch.sh")
@@ -1302,6 +1303,21 @@ class SaveManagementTests(unittest.TestCase):
         self.assertEqual(summary["uploaded"], 0)
         self.assertEqual(summary.get("skipped"), 1)
         self.assertEqual(FakeRomM.uploaded, [])
+
+    def test_12_retroarch_uses_its_emulator_save_folder(self):
+        self.assertEqual(
+            save_root("/tmp/Emulation", "nes", "retroarch"),
+            "/tmp/Emulation/saves/retroarch/saves",
+        )
+        self.assertEqual(
+            save_root("/tmp/Emulation", "nes"),
+            "/tmp/Emulation/saves/nes",
+        )
+
+    def test_13_structured_emulators_report_save_sync_unavailable(self):
+        self.assertIn("not implemented", save_unsupported_reason({"launcher": "dolphin-emu"}))
+        self.assertIn("not implemented", save_unsupported_reason({"launcher": "ryujinx"}))
+        self.assertEqual(save_unsupported_reason({"launcher": "retroarch"}), "")
 
     def test_10_create_a_sync_slot_seeds_it(self):
         with open(os.path.join(self.save_dir, "1942 (Japan, USA).srm"), "wb") as handle:

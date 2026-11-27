@@ -151,10 +151,48 @@ def rom_stem(rom: dict[str, Any]) -> str:
     return os.path.splitext(rom_target_name(rom))[0]
 
 
-def save_root(emulation_root: str, platform_dir: str) -> str:
-    if not emulation_root or not platform_dir:
+# EmuDeck points these emulators at their own save folders.  The per-platform
+# folders beside them are not what the emulator reads, so syncing there changes
+# the UI while the game still opens the old save.
+FLAT_SAVE_DIRS = {
+    "retroarch": os.path.join("retroarch", "saves"),
+    "melonds": os.path.join("melonds", "saves"),
+}
+UNSUPPORTED_SAVE_LAUNCHERS = {
+    "dolphin", "dolphin-emu", "primehack",
+    "ryujinx", "azahar", "cemu", "xenia", "xenia-emu",
+    "xemu", "xemu-emu", "flycast", "duckstation", "pcsx2", "pcsx2-qt",
+    "ppsspp", "rpcs3", "shadps4", "vita3k",
+}
+
+
+def save_root(emulation_root: str, platform_dir: str, launcher: str = "") -> str:
+    if not emulation_root:
+        return ""
+    emulator_dir = FLAT_SAVE_DIRS.get((launcher or "").casefold())
+    if emulator_dir:
+        return os.path.join(emulation_root, "saves", emulator_dir)
+    if not platform_dir:
         return ""
     return os.path.join(emulation_root, "saves", platform_dir)
+
+
+def save_root_for(emulation_root: str, mapping: dict[str, Any]) -> str:
+    return save_root(
+        emulation_root,
+        str(mapping.get("dir") or mapping.get("platform") or ""),
+        str(mapping.get("launcher") or ""),
+    )
+
+
+def save_unsupported_reason(mapping: dict[str, Any]) -> str:
+    launcher = str(mapping.get("launcher") or "").casefold()
+    if launcher in FLAT_SAVE_DIRS or not launcher:
+        return ""
+    if launcher in UNSUPPORTED_SAVE_LAUNCHERS:
+        name = mapping.get("launcher_name") or mapping.get("launcher") or "this emulator"
+        return f"Save management is not implemented for {name} yet; use the emulator's own save menu."
+    return "Save management is not available for this emulator yet."
 
 
 def local_saves(root: str, stem: str, slot: str = SLOT) -> list[LocalSave]:
@@ -368,12 +406,17 @@ class SaveSyncService:
         }
         if not settings["enabled"]:
             return summary
+        unsupported = save_unsupported_reason(mapping)
+        if unsupported:
+            summary["status"] = "unsupported"
+            summary["reason"] = unsupported
+            return summary
         server_key = self._server_key(server)
         if server_key in self._unsupported:
             summary["status"] = "unsupported"
             summary["reason"] = "This RomM server has no save-sync API."
             return summary
-        root = save_root(emulation_root, str(mapping.get("dir") or mapping.get("platform") or ""))
+        root = save_root_for(emulation_root, mapping)
         stem = rom_stem(rom)
         if not root or not stem:
             summary["reason"] = "No save folder is known for this platform."
@@ -495,10 +538,15 @@ class SaveSyncService:
                                    "uploaded": 0, "failed": 0, "items": []}
         if not settings["enabled"]:
             return summary
+        unsupported = save_unsupported_reason(mapping)
+        if unsupported:
+            summary["status"] = "unsupported"
+            summary["reason"] = unsupported
+            return summary
         server_key = self._server_key(server)
         if server_key in self._unsupported:
             return summary
-        root = save_root(emulation_root, str(mapping.get("dir") or mapping.get("platform") or ""))
+        root = save_root_for(emulation_root, mapping)
         stem = rom_stem(rom)
         if not root or not stem:
             return summary
@@ -568,8 +616,11 @@ class SaveSyncService:
                 "A slot name needs letters, digits, dots, dashes or underscores.",
                 {"status": "error"},
             )
+        unsupported = save_unsupported_reason(mapping)
+        if unsupported:
+            raise SaveSyncError(unsupported, {"status": "unsupported"})
         self.state.set_slot(f"{server_key}|{rom_id}", cleaned)
-        root = save_root(emulation_root, str(mapping.get("dir") or mapping.get("platform") or ""))
+        root = save_root_for(emulation_root, mapping)
         stem = rom_stem(rom)
         local = local_saves(root, stem, cleaned) if root and stem else []
         result: dict[str, Any] = {"slot": cleaned, "seeded": False, "file": ""}
@@ -590,12 +641,13 @@ class SaveSyncService:
         server_key = self._server_key(server)
         rom_id = int(rom["id"])
         slot = self.active_slot(server_key, rom_id)
-        root = save_root(emulation_root, str(mapping.get("dir") or mapping.get("platform") or ""))
+        unsupported = save_unsupported_reason(mapping)
+        root = save_root_for(emulation_root, mapping)
         stem = rom_stem(rom)
         out: dict[str, Any] = {
             "rom_id": rom_id,
             "slot": slot,
-            "supported": True,
+            "supported": not bool(unsupported),
             "sync": self.snapshot(),
             "server": [],
             "slots": [],
@@ -603,6 +655,9 @@ class SaveSyncService:
             "playing": "",
             "root": root,
         }
+        if unsupported:
+            out["reason"] = unsupported
+            return out
         local = local_saves(root, stem, slot) if root else []
         main = local[0] if local else None
         out["playing"] = main.name if main else ""
@@ -661,7 +716,10 @@ class SaveSyncService:
         """Write one server save here and make it this game's synced save."""
         server_key = self._server_key(server)
         rom_id = int(rom["id"])
-        root = save_root(emulation_root, str(mapping.get("dir") or mapping.get("platform") or ""))
+        unsupported = save_unsupported_reason(mapping)
+        if unsupported:
+            raise SaveSyncError(unsupported, {"status": "unsupported"})
+        root = save_root_for(emulation_root, mapping)
         stem = rom_stem(rom)
         slot = self.active_slot(server_key, rom_id)
         if not root or not stem:
@@ -734,9 +792,12 @@ class SaveSyncService:
     def upload_local(self, rom: dict[str, Any], mapping: dict[str, Any], emulation_root: str,
                      client, server: dict[str, Any] | None, name: str) -> dict[str, Any]:
         """Upload one of this machine's saves as the game's synced save."""
+        unsupported = save_unsupported_reason(mapping)
+        if unsupported:
+            raise SaveSyncError(unsupported, {"status": "unsupported"})
         server_key = self._server_key(server)
         rom_id = int(rom["id"])
-        root = save_root(emulation_root, str(mapping.get("dir") or mapping.get("platform") or ""))
+        root = save_root_for(emulation_root, mapping)
         stem = rom_stem(rom)
         slot = self.active_slot(server_key, rom_id)
         clean = os.path.basename(str(name or ""))
