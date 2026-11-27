@@ -685,6 +685,21 @@ class UnitTests(unittest.TestCase):
             self.assertEqual(status["hdd"]["virtual_size"], 8 * 1024 ** 3)
             self.assertEqual(status["eeprom"]["status"], "present")
 
+    def test_a_corrupt_zip_is_rejected_before_launch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            launcher = os.path.join(tmp, "retroarch.sh")
+            with open(launcher, "w") as handle:
+                handle.write("")
+            os.chmod(launcher, 0o755)
+            game = os.path.join(tmp, "Sonic Labyrinth (U) [!].zip")
+            with open(game, "w") as handle:
+                handle.write("<!DOCTYPE html><html>Just a moment...</html>")
+            with self.assertRaises(EmuDeckError):
+                build_command(
+                    {"launcher": "retroarch", "launcher_path": launcher, "name": "Game Gear", "core": "genesis_plus_gx"},
+                    game,
+                )
+
     def test_ryujinx_picks_a_game_file_from_an_install_folder(self):
         with tempfile.TemporaryDirectory() as tmp:
             launcher = os.path.join(tmp, "ryujinx.sh")
@@ -951,7 +966,7 @@ class IntegrationTests(unittest.TestCase):
         status, payload = self.call("/api/play", "POST", {"rom_id": 180, "dry_run": True})
         self.assertEqual(status, 200, payload)
         self.assertIn("-L", payload["command"])
-        self.assertIn("mesen", payload["command"])
+        self.assertTrue(any("mesen" in part for part in payload["command"]))
         status, payload = self.call("/api/play", "POST", {"rom_id": 180})
         self.assertEqual(status, 200, payload)
         self.assertTrue(payload["launched"])

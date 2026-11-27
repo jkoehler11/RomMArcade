@@ -25,6 +25,11 @@ def _now() -> float:
     return time.time()
 
 
+def _looks_like_html(header: bytes) -> bool:
+    text = header.lstrip().lower()[:512]
+    return text.startswith(b"<!doctype") or text.startswith(b"<html") or b"<title>just a moment" in text
+
+
 class DownloadManager:
     def __init__(self, state: StateStore, log_file: str, concurrency: int = 2):
         self._state = state
@@ -240,6 +245,17 @@ class DownloadManager:
                 pass
             raise EmuDeckError(
                 f"The download stopped early ({received} of {header_total} bytes); nothing was installed."
+            )
+        with open(part, "rb") as handle:
+            head = handle.read(512)
+        if _looks_like_html(head):
+            try:
+                os.unlink(part)
+            except OSError:
+                pass
+            raise EmuDeckError(
+                "The server returned a web page instead of the file. "
+                "Check this ROM or BIOS on the server, then try again."
             )
         os.replace(part, dest)
         self._update(job, received=received, speed=0.0)

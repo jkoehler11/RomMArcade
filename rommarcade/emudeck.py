@@ -1118,6 +1118,34 @@ def discover_cores() -> list[str]:
     return sorted(found)
 
 
+def retroarch_core_path(core: str) -> str:
+    """RetroArch's -L takes the core's library path, not its catalogue name."""
+    if not core:
+        return ""
+    home = os.path.expanduser("~")
+    roots = [
+        os.path.join(home, ".var/app/org.libretro.RetroArch/config/retroarch/cores"),
+        os.path.join(home, ".config/retroarch/cores"),
+        os.path.join(home, "Emulation/tools/retroarch/cores"),
+    ]
+    extension = ".so"
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA") or home
+        roots.extend([
+            os.path.join(appdata, "RetroArch", "cores"),
+            os.path.join(home, "AppData", "Roaming", "RetroArch", "cores"),
+        ])
+        extension = ".dll"
+    elif sys.platform == "darwin":
+        roots.append(os.path.join(home, "Library", "Application Support", "RetroArch", "cores"))
+        extension = ".dylib"
+    for root in roots:
+        path = os.path.join(root, f"{core}_libretro{extension}")
+        if os.path.isfile(path):
+            return path
+    return ""
+
+
 def _normalize_dir(name: str) -> str:
     return re.sub(r"[^a-z0-9]", "", name.lower())
 
@@ -1451,6 +1479,14 @@ def build_command(mapping: dict[str, Any], file_path: str) -> list[str]:
         command = [os.environ.get("COMSPEC", "cmd.exe"), "/c", launcher]
     else:
         command = [launcher]
+    if file_path.casefold().endswith(".zip") and os.path.isfile(file_path):
+        with open(file_path, "rb") as handle:
+            head = handle.read(512)
+        if head.lstrip().lower().startswith((b"<!doctype", b"<html")):
+            raise EmuDeckError(
+                "This game's ZIP is an HTML page from the server, not a ROM. "
+                "Reinstall it from RomM and check the copy on the server."
+            )
     if mapping.get("launcher") in ("xemu", "xemu-emu"):
         disc = xemu_disc_path(file_path)
         if not disc:
@@ -1467,7 +1503,8 @@ def build_command(mapping: dict[str, Any], file_path: str) -> list[str]:
             )
         return command + [game]
     if mapping.get("launcher") == "retroarch" and mapping.get("core"):
-        command += ["-L", mapping["core"]]
+        core = mapping["core"]
+        command += ["-L", retroarch_core_path(core) or core]
     command.append(file_path)
     return command
 
