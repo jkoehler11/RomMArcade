@@ -389,6 +389,9 @@ async function renderPlatform(slug, token) {
       ),
     ),
     h("div", { class: "page-actions" },
+      enabled && (local.storage_status || []).length && state.status?.emudeck?.usable
+        ? h("button", { class: "btn", onClick: () => openSetup(platform) }, icon("settings"), "Setup")
+        : null,
       enabled && biosAvailable && state.status?.emudeck?.usable
         ? h("button", { class: "btn", onClick: () => openBiosManager(platform) }, icon("download"), "BIOS files")
         : null,
@@ -520,6 +523,9 @@ async function renderGame(id, token, tab = "") {
   const canPlay = Boolean(mapping.launcher && mapping.launcher_ready !== false);
   const missingEmulator = emuOn && Boolean(mapping.launcher) && mapping.launcher_ready === false;
   const missingEmuBios = !missingEmulator && emuOn ? (mapping.bios_missing || []) : [];
+  const missingStorage = !missingEmulator && emuOn
+    ? (mapping.storage_status || []).filter((entry) => entry.kind === "hdd" && entry.status !== "present")
+    : [];
   const biosAvailable = needsBios(platform, mapping);
   const launcherName = mapping.launcher_name || mapping.launcher || "Emulator";
   const emuInstaller = state.status?.emudeck?.installer || "";
@@ -646,6 +652,18 @@ async function renderGame(id, token, tab = "") {
             state.status?.emudeck?.usable
               ? h("button", { class: "btn small", onClick: (event) => downloadBios(platform.id, event.currentTarget) }, icon("download"), "Download BIOS")
               : h("a", { class: "btn small", href: "#/emudeck" }, icon("settings"), "Set up game folders"),
+          )
+        : null,
+      missingStorage.length
+        ? h("div", { class: "bios-banner" },
+            icon("alert"),
+            h("div", { class: "txt" },
+              h("b", null, `${launcherName} needs its ${missingStorage[0].label.toLowerCase()}`),
+              h("div", null, `Missing ${missingStorage[0].path}. The emulator opens but cannot boot a game until this is set up.`)),
+            h("div", { class: "row" },
+              h("button", { class: "btn small ghost", onClick: () => renderGame(id, state.renderToken) }, icon("refresh"), "Recheck"),
+              platform ? h("button", { class: "btn small", onClick: () => openSetup(platform) }, icon("settings"), "Set up") : null,
+            ),
           )
         : null,
   ].filter(Boolean);
@@ -1537,6 +1555,109 @@ function biosManagerBody(platform) {
       "Download copies a RomM file here; delete removes it from the machine or from RomM. Upload and delete need the firmware.write scope on your RomM client token."),
   );
   return { node, reload };
+}
+
+function setupBody(platform) {
+  const node = h("div");
+  const manager = { node, render: null };
+  const download = async (button, entry) => {
+    button.disabled = true;
+    try {
+      const result = await api.downloadStorage(platform.id, entry.kind);
+      toast(`${entry.label} installed (${fmtBytes(result.bytes)})`, "good");
+      state.platforms = null;
+      const fresh = (await getPlatforms(true)).find((item) => item.id === platform.id) || platform;
+      manager.render(fresh);
+      route();
+    } catch (error) { toast(error.message, "bad"); button.disabled = false; }
+  };
+  manager.render = (current) => {
+    const local = current.local || {};
+    const storage = local.storage_status || [];
+    const bios = local.bios_status || (local.bios_required || []).map((name) => ({
+      name, status: (local.bios_missing || []).includes(name) ? "missing" : "present",
+    }));
+    const statusText = { present: "Present", missing: "Missing", invalid: "Needs attention" };
+    const storageRows = storage.map((entry) => {
+      const detail = entry.status === "present"
+        ? entry.kind === "hdd" && entry.virtual_size
+          ? `${fmtBytes(entry.virtual_size)} virtual · ${fmtBytes(entry.actual_size)} on disk`
+          : fmtBytes(entry.actual_size)
+        : entry.kind === "eeprom"
+          ? "xemu creates this on first boot; if it stays missing, copy eeprom.bin from a working Xbox setup."
+          : entry.path || "";
+      return h("div", { class: "setup-file" },
+        h("div", { style: { minWidth: "0" } },
+          h("div", { class: "setup-name" }, entry.label),
+          h("div", { class: "note mono", style: { overflowWrap: "anywhere" } }, entry.path),
+          h("div", { class: "note" }, detail),
+        ),
+        h("div", { class: "row", style: { gap: "8px", alignItems: "center" } },
+          h("span", { class: `chip ${entry.status === "present" ? "ok" : ""}` },
+            statusText[entry.status] || entry.status),
+          entry.download && entry.status !== "present"
+            ? h("button", {
+                class: "btn small",
+                onClick: (event) => download(event.currentTarget, entry),
+              }, icon("download"), "Download")
+            : null,
+        ),
+      );
+    });
+    const biosRows = bios.map((entry) => {
+      const note = entry.status === "invalid"
+        ? `${entry.actual_size || 0} bytes — expected ${entry.size || 0}`
+        : (entry.status === "alias" || entry.status === "misplaced") && entry.found
+          ? `Found ${entry.found}`
+          : "";
+      return h("div", { class: "row", style: { justifyContent: "space-between", alignItems: "center", padding: "6px 0" } },
+        h("div", { style: { minWidth: "0" } },
+          h("div", { style: { fontWeight: "600", overflowWrap: "anywhere" } }, entry.name),
+          note ? h("div", { class: "note" }, note) : null,
+        ),
+        h("span", { class: `chip ${entry.status === "present" ? "ok" : ""}` },
+          statusText[entry.status] || entry.status),
+      );
+    });
+    node.replaceChildren(
+      h("div", { style: { marginBottom: "18px" } },
+        h("div", { class: "section-title" }, "System storage"),
+        storage.length
+          ? storageRows
+          : h("p", { class: "note" }, "This system does not need a hard-drive image."),
+        local.storage_folder
+          ? h("p", { class: "note" }, `Storage folder: ${local.storage_folder}`)
+          : null,
+      ),
+      h("div", { style: { marginBottom: "12px" } },
+        h("div", { class: "section-title" }, "Required BIOS"),
+        bios.length
+          ? biosRows
+          : h("p", { class: "note" }, "This system does not need BIOS files."),
+        h("button", {
+          class: "btn small ghost",
+          style: { marginTop: "8px" },
+          onClick: () => { closeModal(); openBiosManager(current); },
+        }, icon("download"), "BIOS files"),
+      ),
+      h("p", { class: "note" },
+        "EmuDeck owns the emulator; RomMArcade only prepares the system files it needs."),
+    );
+  };
+  manager.render(platform);
+  return manager;
+}
+
+function openSetup(platform) {
+  const title = platform.display_name || platform.name || platform.fs_slug || "this platform";
+  const manager = setupBody(platform);
+  openModal(h("div", { class: "sheet" },
+    h("h2", null, `Setup · ${title}`),
+    manager.node,
+    h("div", { class: "row end", style: { marginTop: "16px" } },
+      h("button", { class: "btn ghost", onClick: closeModal }, "Close"),
+    ),
+  ));
 }
 
 function openBiosManager(platform) {

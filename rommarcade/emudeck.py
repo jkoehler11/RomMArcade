@@ -11,8 +11,11 @@ import glob
 import json
 import os
 import re
+import io
 import shutil
 import subprocess
+import urllib.request
+import zipfile
 import sys
 import threading
 import time
@@ -330,6 +333,107 @@ def missing_emulator_bios(launcher_id: str, bios_root: str, platform_slug: str =
         entry["name"] for entry in bios_status(launcher_id, bios_root, platform_slug)
         if entry["status"] != "present"
     ]
+
+
+# System files an emulator needs beyond BIOS.  Keyed by launcher id; paths are
+# relative to the EmuDeck storage folder.  A missing hard-drive image is a
+# launch blocker; the EEPROM is reported but xemu can create one on first boot.
+EMULATOR_STORAGE: dict[str, list[dict[str, Any]]] = {
+    "xemu-emu": [
+        {
+            "kind": "hdd",
+            "label": "Xbox hard drive",
+            "dir": "xemu",
+            "file": "xbox_hdd.qcow2",
+            "size": 8 * 1024 ** 3,
+            "download": "https://github.com/mborgerson/xemu-hdd-image/releases/latest/download/xbox_hdd.qcow2.zip",
+            "member": "xbox_hdd.qcow2",
+        },
+        {
+            "kind": "eeprom",
+            "label": "Xbox EEPROM",
+            "dir": "xemu",
+            "file": "eeprom.bin",
+            "size": 256,
+        },
+    ],
+}
+EMULATOR_STORAGE["xemu"] = EMULATOR_STORAGE["xemu-emu"]
+
+
+def _qcow2_virtual_size(path: str) -> int:
+    """The virtual disk size in a qcow2 header (0 when it is not qcow2)."""
+    try:
+        with open(path, "rb") as handle:
+            header = handle.read(32)
+    except OSError:
+        return 0
+    if len(header) < 32 or header[:4] != b"QFI\xfb":
+        return 0
+    return int.from_bytes(header[24:32], "big")
+
+
+def storage_status(launcher_id: str, storage_root: str) -> list[dict[str, Any]]:
+    specs = EMULATOR_STORAGE.get((launcher_id or "").casefold(), [])
+    out: list[dict[str, Any]] = []
+    for spec in specs:
+        folder = os.path.join(storage_root, spec["dir"]) if storage_root else ""
+        path = os.path.join(folder, spec["file"]) if folder else ""
+        entry: dict[str, Any] = {
+            "kind": spec["kind"],
+            "label": spec["label"],
+            "file": spec["file"],
+            "path": path,
+            "size": int(spec["size"]),
+            "actual_size": 0,
+            "virtual_size": 0,
+            "present": False,
+            "status": "missing",
+            "download": spec.get("download") or "",
+        }
+        if path and os.path.isfile(path):
+            actual = os.path.getsize(path)
+            virtual = _qcow2_virtual_size(path) if spec["kind"] == "hdd" else 0
+            entry.update(actual_size=actual, virtual_size=virtual)
+            if spec["kind"] == "hdd":
+                entry["present"] = actual > 0 and (virtual >= spec["size"] or actual >= spec["size"])
+            else:
+                entry["present"] = actual == spec["size"]
+            entry["status"] = "present" if entry["present"] else "invalid"
+        out.append(entry)
+    return out
+
+
+def download_emulator_storage(launcher_id: str, storage_root: str, kind: str = "hdd") -> dict[str, Any]:
+    """Fetch a system image the emulator ships separately (xemu's HDD)."""
+    specs = EMULATOR_STORAGE.get((launcher_id or "").casefold(), [])
+    spec = next((item for item in specs if item["kind"] == kind), None)
+    if spec is None:
+        raise EmuDeckError(f"{launcher_id or 'This emulator'} has no {kind} image to download.")
+    url = spec.get("download") or ""
+    if not url:
+        raise EmuDeckError(f"The {spec['label']} cannot be downloaded automatically.")
+    if not storage_root:
+        raise EmuDeckError("No EmuDeck storage folder was found.")
+    folder = os.path.join(storage_root, spec["dir"])
+    os.makedirs(folder, exist_ok=True)
+    target = os.path.join(folder, spec["file"])
+    try:
+        with urllib.request.urlopen(url, timeout=120) as response:
+            payload = response.read()
+        with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+            data = archive.read(spec.get("member") or spec["file"])
+    except Exception as exc:
+        raise EmuDeckError(f"Could not download the {spec['label']}: {exc}") from exc
+    if spec["kind"] == "hdd" and data[:4] != b"QFI\xfb":
+        raise EmuDeckError("The downloaded hard-drive image is not a qcow2 file.")
+    if os.path.exists(target):
+        shutil.copy2(target, f"{target}.bak-{time.strftime('%Y%m%d-%H%M%S')}")
+    temporary = target + ".part"
+    with open(temporary, "wb") as handle:
+        handle.write(data)
+    os.replace(temporary, target)
+    return {"path": target, "bytes": len(data), "status": storage_status(launcher_id, storage_root)}
 
 
 _LAUNCHER_CACHE: dict[str, Any] = {"fingerprint": None, "data": None, "lock": threading.Lock()}
@@ -930,6 +1034,8 @@ def platform_mapping(
     launcher_key = (launcher or {}).get("id") or ""
     bios_root = roots.get("bios_root") or ""
     bios_state = bios_status(launcher_key, bios_root, fs_slug)
+    storage_root = os.path.join(roots.get("root") or "", "storage") if roots.get("root") else ""
+    storage_state = storage_status(launcher_key, storage_root)
     return {
         "platform": fs_slug,
         "slug": platform.get("slug"),
@@ -946,6 +1052,12 @@ def platform_mapping(
         "bios_missing": [entry["name"] for entry in bios_state if entry["status"] != "present"],
         "bios_status": bios_state,
         "bios_folder": bios_root,
+        "storage_status": storage_state,
+        "storage_missing": [
+            entry["label"] for entry in storage_state
+            if entry["kind"] == "hdd" and entry["status"] != "present"
+        ],
+        "storage_folder": storage_root,
         "core": core or "",
         "source": "override" if override else ("alias" if directory and directory.lower() != fs_slug.lower() else "catalogue"),
     }

@@ -70,6 +70,9 @@ export const api = {
   repairBios: (platformId) => request("/api/bios/repair", {
     method: "POST", body: { platform_id: Number(platformId) },
   }),
+  downloadStorage: (platformId, kind = "hdd") => request("/api/storage/download", {
+    method: "POST", body: { platform_id: Number(platformId), kind },
+  }),
   emudeck: () => request("/api/emudeck", { timeout: 60000 }),
   library: () => request("/api/library", { timeout: 60000 }),
   saveLibrary: (body) => request("/api/library", { method: "POST", body, timeout: 60000 }),

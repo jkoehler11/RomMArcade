@@ -45,6 +45,7 @@ from rommarcade.emudeck import (
     missing_emulator_bios,
     bios_status,
     repair_emulator_bios,
+    storage_status,
     rom_target_name,
     platform_mapping,
     resolve_roots,
@@ -616,6 +617,26 @@ class UnitTests(unittest.TestCase):
                 handle.write(b"\0" * (1024 * 1024))
             self.assertEqual(missing_emulator_bios("xemu-emu", bios), [], "names match case-insensitively")
             self.assertEqual(missing_emulator_bios("retroarch", bios), [])
+
+    def test_storage_status_reads_the_xemu_disk_and_eeprom(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = os.path.join(tmp, "storage", "xemu")
+            os.makedirs(storage)
+            missing = storage_status("xemu-emu", os.path.join(tmp, "storage"))
+            self.assertEqual({entry["kind"]: entry["status"] for entry in missing},
+                             {"hdd": "missing", "eeprom": "missing"})
+            header = bytearray(64)
+            header[:4] = b"QFI\xfb"
+            header[4:8] = (3).to_bytes(4, "big")
+            header[24:32] = (8 * 1024 ** 3).to_bytes(8, "big")
+            with open(os.path.join(storage, "xbox_hdd.qcow2"), "wb") as handle:
+                handle.write(bytes(header))
+            with open(os.path.join(storage, "eeprom.bin"), "wb") as handle:
+                handle.write(b"\0" * 256)
+            status = {entry["kind"]: entry for entry in storage_status("xemu-emu", os.path.join(tmp, "storage"))}
+            self.assertEqual(status["hdd"]["status"], "present")
+            self.assertEqual(status["hdd"]["virtual_size"], 8 * 1024 ** 3)
+            self.assertEqual(status["eeprom"]["status"], "present")
 
     def test_xemu_launches_an_iso_with_cdrom(self):
         with tempfile.TemporaryDirectory() as tmp:

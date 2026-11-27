@@ -409,6 +409,10 @@ a { color: inherit; text-decoration: none; }
 .file-more { margin-top: 10px; }
 .file-row { display: flex; gap: 12px; align-items: center; padding: 9px 12px; border: 1px solid var(--line-soft); border-radius: 8px; font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
 .file-row .n { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #c7cfea; }
+.setup-file { display: flex; justify-content: space-between; gap: 16px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.setup-file:last-child { border-bottom: 0; }
+.setup-name { font-weight: 600; overflow-wrap: anywhere; }
+
 .bios-banner { display: flex; align-items: center; gap: 14px; padding: 14px 16px; border: 1px solid rgba(255, 200, 87, .28); background: rgba(255, 200, 87, .06); border-radius: 12px; margin-bottom: 20px; }
 .bios-banner .txt { flex: 1; font-size: 13px; color: #e8d9b4; line-height: 1.45; }
 .bios-banner .txt b { color: var(--amber); }

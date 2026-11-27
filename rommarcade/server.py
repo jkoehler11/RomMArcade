@@ -38,6 +38,7 @@ from .emudeck import (
     EmuDeckError,
     bios_target,
     build_command,
+    download_emulator_storage,
     repair_emulator_bios,
     create_library,
     detect as detect_emudeck,
@@ -619,7 +620,11 @@ class App:
             (cfg.get("emudeck") or {}).get("overrides") or {},
         )
         folder = os.path.join(root, slug) if root and slug and os.path.isdir(os.path.join(root, slug)) else ""
-        return {"root": root, "platform": platform, "slug": slug, "mapping": mapping, "folder": folder}
+        storage_root = os.path.join(emu.get("root") or "", "storage") if emu.get("root") else ""
+        return {
+            "root": root, "storage_root": storage_root, "platform": platform,
+            "slug": slug, "mapping": mapping, "folder": folder,
+        }
 
     def bios_local(self, platform_id: int) -> dict[str, Any]:
         context = self._bios_context(platform_id)
@@ -1049,6 +1054,24 @@ class App:
                 context["root"],
                 context["slug"],
             )
+            self._cache_clear()
+            return 200, JSON, result
+
+        if route == ("POST", "/api/storage/download"):
+            data = body or {}
+            platform_id = int(data.get("platform_id") or 0)
+            if platform_id <= 0:
+                raise HttpError(400, "A platform_id is required.")
+            kind = str(data.get("kind") or "hdd").strip().lower()
+            context = self._bios_context(platform_id)
+            try:
+                result = download_emulator_storage(
+                    context["mapping"].get("launcher") or "",
+                    context["storage_root"],
+                    kind,
+                )
+            except EmuDeckError as exc:
+                raise HttpError(502, str(exc)) from exc
             self._cache_clear()
             return 200, JSON, result
 
@@ -1617,6 +1640,9 @@ def _public_mapping(mapping: dict[str, Any], enabled: bool = True) -> dict[str, 
         "bios_missing": list(mapping.get("bios_missing") or []),
         "bios_status": [dict(entry) for entry in (mapping.get("bios_status") or [])],
         "bios_folder": mapping.get("bios_folder") or "",
+        "storage_status": [dict(entry) for entry in (mapping.get("storage_status") or [])],
+        "storage_missing": list(mapping.get("storage_missing") or []),
+        "storage_folder": mapping.get("storage_folder") or "",
         "core": mapping.get("core") or "",
         "source": mapping.get("source") or "",
         "ready": bool(mapping.get("exists") and mapping.get("launcher")),
