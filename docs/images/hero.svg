@@ -1,0 +1,131 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 560" role="img" aria-labelledby="title desc">
+  <title id="title">RomMArcade — your RomM library, in an arcade shell</title>
+  <desc id="desc">A neon arcade-style banner with the RomMArcade wordmark and a preview of the app's game shelf.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#070910"/>
+      <stop offset=".55" stop-color="#0b1020"/>
+      <stop offset="1" stop-color="#0b0a18"/>
+    </linearGradient>
+    <radialGradient id="glowCyan" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#39e6ff" stop-opacity=".34"/>
+      <stop offset="1" stop-color="#39e6ff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowPink" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#ff4fd8" stop-opacity=".26"/>
+      <stop offset="1" stop-color="#ff4fd8" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="mark" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#39e6ff"/>
+      <stop offset=".58" stop-color="#71ffc7"/>
+      <stop offset="1" stop-color="#ff4fd8"/>
+    </linearGradient>
+    <linearGradient id="coverA" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#133b56"/>
+      <stop offset="1" stop-color="#0b162d"/>
+    </linearGradient>
+    <linearGradient id="coverB" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#45204d"/>
+      <stop offset="1" stop-color="#170d2c"/>
+    </linearGradient>
+    <linearGradient id="coverC" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3b2b12"/>
+      <stop offset="1" stop-color="#14121b"/>
+    </linearGradient>
+    <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse">
+      <path d="M48 0H0V48" fill="none" stroke="#9bb8ff" stroke-opacity=".06" stroke-width="1"/>
+    </pattern>
+    <filter id="blur" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="34"/>
+    </filter>
+  </defs>
+
+  <rect width="1600" height="560" fill="url(#bg)"/>
+  <rect width="1600" height="560" fill="url(#grid)"/>
+  <ellipse cx="490" cy="210" rx="360" ry="240" fill="url(#glowCyan)" filter="url(#blur)"/>
+  <ellipse cx="1280" cy="380" rx="360" ry="240" fill="url(#glowPink)" filter="url(#blur)"/>
+
+  <!-- wordmark and promise -->
+  <g transform="translate(96 92)">
+    <g>
+      <rect width="66" height="66" rx="18" fill="#0e101c" stroke="url(#mark)" stroke-width="3"/>
+      <path d="M27 22l20 11-20 11z" fill="url(#mark)"/>
+    </g>
+    <text x="88" y="48" font-family="Inter, Segoe UI, sans-serif" font-size="46" font-weight="800" letter-spacing="-1.8" fill="#eef2ff">RomM<tspan fill="url(#mark)">Arcade</tspan></text>
+    <text x="2" y="116" font-family="Inter, Segoe UI, sans-serif" font-size="12" font-weight="700" letter-spacing="3" fill="#9fb0d8">YOUR ROMM LIBRARY, IN AN ARCADE SHELL</text>
+    <text x="2" y="178" font-family="Inter, Segoe UI, sans-serif" font-size="31" font-weight="700" letter-spacing="-.5" fill="#eef2ff">Browse the shelf.</text>
+    <text x="2" y="216" font-family="Inter, Segoe UI, sans-serif" font-size="31" font-weight="700" letter-spacing="-.5" fill="#eef2ff">Install in one click.</text>
+    <text x="2" y="254" font-family="Inter, Segoe UI, sans-serif" font-size="31" font-weight="700" letter-spacing="-.5" fill="#71ffc7">Play through EmuDeck.</text>
+    <text x="2" y="304" font-family="Inter, Segoe UI, sans-serif" font-size="17" fill="#9aa8ca">A desktop front door for RomM that leaves the emulators,</text>
+    <text x="2" y="328" font-family="Inter, Segoe UI, sans-serif" font-size="17" fill="#9aa8ca">ROM folders and launchers exactly where EmuDeck put them.</text>
+
+    <g transform="translate(2 366)">
+      <rect width="91" height="31" rx="15.5" fill="#39e6ff" fill-opacity=".08" stroke="#39e6ff" stroke-opacity=".3"/>
+      <circle cx="17" cy="15.5" r="3.5" fill="#39e6ff"/>
+      <text x="29" y="20" font-family="JetBrains Mono, monospace" font-size="11" font-weight="700" fill="#b8f8ff">ROMM</text>
+      <rect x="101" width="118" height="31" rx="15.5" fill="#55f2a4" fill-opacity=".07" stroke="#55f2a4" stroke-opacity=".28"/>
+      <circle cx="117" cy="15.5" r="3.5" fill="#55f2a4"/>
+      <text x="129" y="20" font-family="JetBrains Mono, monospace" font-size="11" font-weight="700" fill="#b6ffdc">EMUDECK</text>
+      <rect x="229" width="168" height="31" rx="15.5" fill="#ff4fd8" fill-opacity=".07" stroke="#ff4fd8" stroke-opacity=".28"/>
+      <text x="244" y="20" font-family="JetBrains Mono, monospace" font-size="11" font-weight="700" fill="#ffc0f2">LINUX · MACOS · WINDOWS</text>
+    </g>
+  </g>
+
+  <!-- app shelf preview -->
+  <g transform="translate(884 62)">
+    <rect width="620" height="436" rx="18" fill="#0b0f1d" stroke="#2a3557" stroke-width="1.5"/>
+    <rect x="1" y="1" width="618" height="48" rx="17" fill="#10162a" stroke="#2a3557" stroke-width="1"/>
+    <circle cx="25" cy="25" r="4" fill="#ff5f78"/>
+    <circle cx="39" cy="25" r="4" fill="#ffc857"/>
+    <circle cx="53" cy="25" r="4" fill="#55f2a4"/>
+    <rect x="76" y="13" width="214" height="24" rx="12" fill="#090d18" stroke="#273352"/>
+    <text x="91" y="29" font-family="JetBrains Mono, monospace" font-size="9" fill="#7384aa">SEARCH THE LIBRARY</text>
+    <rect x="476" y="13" width="126" height="24" rx="12" fill="#101b2b" stroke="#2c6a58"/>
+    <circle cx="493" cy="25" r="3.2" fill="#55f2a4"/>
+    <text x="504" y="29" font-family="JetBrains Mono, monospace" font-size="9" fill="#8df5c3">READY</text>
+
+    <text x="26" y="82" font-family="Inter, Segoe UI, sans-serif" font-size="11" font-weight="700" letter-spacing="2.5" fill="#7384aa">RECENTLY ADDED</text>
+    <text x="26" y="106" font-family="Inter, Segoe UI, sans-serif" font-size="20" font-weight="700" fill="#eef2ff">Your shelf is ready</text>
+
+    <g transform="translate(26 128)">
+      <!-- card 1 -->
+      <rect width="174" height="222" rx="11" fill="#11182c" stroke="#243052"/>
+      <rect width="174" height="176" rx="11" fill="url(#coverA)"/>
+      <rect x="10" y="10" width="42" height="18" rx="9" fill="#55f2a4" fill-opacity=".16" stroke="#55f2a4" stroke-opacity=".4"/>
+      <text x="19" y="23" font-family="JetBrains Mono, monospace" font-size="7" font-weight="700" fill="#8df5c3">LOCAL</text>
+      <circle cx="88" cy="86" r="20" fill="#39e6ff" fill-opacity=".12" stroke="#39e6ff" stroke-opacity=".4"/>
+      <path d="M84 77l12 9-12 9z" fill="#b8f8ff"/>
+      <text x="12" y="199" font-family="Inter, Segoe UI, sans-serif" font-size="11" font-weight="700" fill="#eef2ff">Spirit Tracks</text>
+      <text x="12" y="214" font-family="JetBrains Mono, monospace" font-size="7" fill="#7384aa">NINTENDO DS · 65 MB</text>
+      <!-- card 2 -->
+      <g transform="translate(190 0)">
+        <rect width="174" height="222" rx="11" fill="#11182c" stroke="#39e6ff" stroke-opacity=".5"/>
+        <rect width="174" height="176" rx="11" fill="url(#coverB)"/>
+        <rect x="10" y="10" width="48" height="18" rx="9" fill="#39e6ff" fill-opacity=".14" stroke="#39e6ff" stroke-opacity=".42"/>
+        <text x="19" y="23" font-family="JetBrains Mono, monospace" font-size="7" font-weight="700" fill="#b8f8ff">PLAYABLE</text>
+        <circle cx="88" cy="86" r="27" fill="#55f2a4"/>
+        <path d="M83 74l17 12-17 12z" fill="#04121a"/>
+        <circle cx="88" cy="86" r="35" fill="none" stroke="#55f2a4" stroke-opacity=".2"/>
+        <text x="12" y="199" font-family="Inter, Segoe UI, sans-serif" font-size="11" font-weight="700" fill="#eef2ff">Jet Grind Radio</text>
+        <text x="12" y="214" font-family="JetBrains Mono, monospace" font-size="7" fill="#7384aa">DREAMCAST · 623 MB</text>
+      </g>
+      <!-- card 3 -->
+      <g transform="translate(380 0)">
+        <rect width="174" height="222" rx="11" fill="#11182c" stroke="#243052"/>
+        <rect width="174" height="176" rx="11" fill="url(#coverC)"/>
+        <rect x="10" y="10" width="54" height="18" rx="9" fill="#ffc857" fill-opacity=".12" stroke="#ffc857" stroke-opacity=".4"/>
+        <text x="19" y="23" font-family="JetBrains Mono, monospace" font-size="7" font-weight="700" fill="#ffe3a1">READY</text>
+        <circle cx="88" cy="86" r="20" fill="#ff4fd8" fill-opacity=".12" stroke="#ff4fd8" stroke-opacity=".4"/>
+        <path d="M84 77l12 9-12 9z" fill="#ffc0f2"/>
+        <text x="12" y="199" font-family="Inter, Segoe UI, sans-serif" font-size="11" font-weight="700" fill="#eef2ff">Sonic Adventure</text>
+        <text x="12" y="214" font-family="JetBrains Mono, monospace" font-size="7" fill="#7384aa">DREAMCAST · 1.2 GB</text>
+      </g>
+    </g>
+
+    <rect x="26" y="374" width="568" height="38" rx="10" fill="#0d1a24" stroke="#245344"/>
+    <path d="M40 386l5 5 9-10" fill="none" stroke="#55f2a4" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="61" y="397" font-family="Inter, Segoe UI, sans-serif" font-size="12" font-weight="600" fill="#8df5c3">Saves pulled before play · pushed after exit</text>
+    <rect x="470" y="382" width="109" height="22" rx="11" fill="#55f2a4" fill-opacity=".12" stroke="#55f2a4" stroke-opacity=".4"/>
+    <text x="483" y="397" font-family="JetBrains Mono, monospace" font-size="9" font-weight="700" fill="#8df5c3">SYNCED</text>
+  </g>
+</svg>

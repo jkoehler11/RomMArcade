@@ -205,7 +205,7 @@ export function gameCard(rom, { showPlay = true, eager = false } = {}) {
   if (!installed && !installing && rom.mapping && !rom.mapping.exists) badges.append(h("span", { class: "badge warn" }, "No folder"));
   card.append(cover, badges);
   if (showPlay && installing) {
-    card.append(h("button", {
+    cover.append(h("button", {
       class: "card-play installing",
       disabled: true,
       "data-install-rom": rom.id,
@@ -213,7 +213,7 @@ export function gameCard(rom, { showPlay = true, eager = false } = {}) {
       "aria-label": `${installLabel(job)}: ${rom.name}`,
     }, h("span", { class: "spinner", "aria-hidden": "true" })));
   } else if (showPlay && (!installed || canPlay)) {
-    card.append(h("button", {
+    cover.append(h("button", {
       class: "card-play",
       "data-stop": "",
       dataset: { playRom: String(rom.id) },
