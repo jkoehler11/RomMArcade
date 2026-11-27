@@ -569,14 +569,29 @@ async function renderGame(id, token, tab = "") {
     fact("Files", String((rom.files || []).length)),
   );
 
-  const saveNote = playSaveNote(saves, installed);
+  let saveNote = playSaveNote(saves, installed);
+  let saveNoteEl = saveNote
+    ? h("div", { class: "play-save", title: saveNote.title || "" },
+        icon("clock"), h("span", null, saveNote.text))
+    : null;
+  const updateSaveNote = (nextSaves) => {
+    saveNote = playSaveNote(nextSaves, installed);
+    if (!saveNoteEl) return;
+    if (!saveNote) {
+      saveNoteEl.remove();
+      saveNoteEl = null;
+      return;
+    }
+    saveNoteEl.title = saveNote.title || "";
+    saveNoteEl.replaceChildren(icon("clock"), h("span", null, saveNote.text));
+  };
   const versions = rom.versions || [];
 
   const overviewPanel = h("div", null,
     rom.summary ? h("p", { class: "game-summary" }, rom.summary) : null,
     facts,
   );
-  const savePanel = savesSection(rom, saves);
+  const savePanel = savesSection(rom, saves, updateSaveNote);
   const filePanel = (rom.files || []).length
     ? fileListSection(rom.files)
     : h("p", { class: "note" }, "RomM did not list individual files for this game.");
@@ -706,7 +721,7 @@ async function renderGame(id, token, tab = "") {
         rom.players ? h("span", { class: "chip" }, rom.players) : null,
       ),
       h("div", { class: "game-actions" }, actions),
-      saveNote ? h("div", { class: "play-save", title: saveNote.title }, icon("clock"), h("span", null, saveNote.text)) : null,
+      saveNoteEl,
       h("div", { class: "play-via" }, icon("cart"),
         !emuOn
           ? "EmuDeck integration is off — browsing only"
@@ -758,7 +773,7 @@ function refreshSavesViews() {
   document.querySelectorAll("[data-saves]").forEach((node) => node.__refresh?.());
 }
 
-function savesSection(rom, initial) {
+function savesSection(rom, initial, onSavesChanged = () => {}) {
   const wrap = h("div", { class: "saves-section", "data-saves": String(rom.id) });
   let data = initial;
   let expanded = false;
@@ -766,6 +781,7 @@ function savesSection(rom, initial) {
   const refresh = async () => {
     try {
       data = await api.romSaves(rom.id);
+      onSavesChanged(data);
       draw();
     } catch (error) {
       toast(error.message, "bad");
@@ -994,6 +1010,7 @@ function savesSection(rom, initial) {
       slotSelect.disabled = true;
       try {
         data = await api.setSaveSlot(rom.id, slotSelect.value);
+        onSavesChanged(data);
         toast(`Now syncing slot ${slotSelect.value}`, "good");
         draw();
       } catch (error) {
