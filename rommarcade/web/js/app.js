@@ -1307,7 +1307,11 @@ function biosManagerBody(platform) {
   };
   const rommTitle = h("div", { class: "section-title" }, "In RomM");
   const rommList = h("div");
-  const localTitle = h("div", { class: "section-title", style: { marginTop: "18px" } }, "On this machine");
+  const missingTitle = h("div", { class: "section-title", style: { marginTop: "18px" } },
+    "Required but not in RomM");
+  const missingList = h("div");
+  const localTitle = h("div", { class: "section-title", style: { marginTop: "18px" } },
+    "On this machine only");
   const localList = h("div");
   const LIMIT = 6;
   let rommFiles = [];
@@ -1385,15 +1389,34 @@ function biosManagerBody(platform) {
     rommList.replaceChildren(...children);
   };
 
+  const drawMissing = () => {
+    if (!statuses.length) return;
+    const rommNames = new Set(rommFiles.map((file) => String(file.file_name || "").toLowerCase()));
+    const inRomm = (entry) => [entry.name, ...(entry.aliases || [])]
+      .some((name) => rommNames.has(String(name || "").toLowerCase()));
+    const absent = statuses.filter((entry) => !inRomm(entry));
+    missingTitle.textContent = `Required but not in RomM · ${absent.length}`;
+    if (!absent.length) {
+      missingList.replaceChildren(h("p", { class: "note" }, "Every required BIOS file is in RomM."));
+      return;
+    }
+    missingList.replaceChildren(...absent.map((entry) => {
+      const here = ["present", "alias", "misplaced"].includes(entry.status);
+      return row(entry.name, here
+        ? "On this machine — upload it so RomM has a copy."
+        : `Missing here too — expected at ${entry.path || "the EmuDeck BIOS folder"}.`, []);
+    }));
+  };
+
   const drawLocal = () => {
     const rommNames = new Set(rommFiles.map((file) => String(file.file_name || "").toLowerCase()));
     const extras = localFiles.filter((file) => !rommNames.has(String(file.name || "").toLowerCase()));
     const filtered = extras.filter((file) => matches(file.name));
-    localTitle.textContent = `Other files on this machine · ${filtered.length}${filtered.length !== extras.length ? ` of ${extras.length}` : ""}`;
+    localTitle.textContent = `On this machine only · ${filtered.length}${filtered.length !== extras.length ? ` of ${extras.length}` : ""}`;
     if (!filtered.length) {
       localList.replaceChildren(h("p", { class: "note" },
         extras.length ? "No BIOS file matches that filter."
-          : `No unmanaged BIOS files${localFolder ? ` in ${localFolder}` : ""}. Files already in RomM are listed above.`));
+          : `Every BIOS file here is also in RomM${localFolder ? ` in ${localFolder}` : ""}.`));
       return;
     }
     const shown = showAllLocal ? filtered : filtered.slice(0, LIMIT);
@@ -1431,14 +1454,19 @@ function biosManagerBody(platform) {
       rommFiles = [];
       rommTitle.textContent = "In RomM";
       rommList.replaceChildren(h("p", { class: "note" }, romm.message));
+      if (statuses.length) {
+        missingTitle.textContent = "Required but not in RomM";
+        missingList.replaceChildren(h("p", { class: "note" }, "Could not read the RomM firmware list."));
+      }
     } else {
       rommFiles = romm;
       drawRomm();
+      drawMissing();
     }
     if (!localData || !Array.isArray(localData.files)) {
       localFiles = [];
       localFolder = "";
-      localTitle.textContent = "On this machine";
+      localTitle.textContent = "On this machine only";
       localList.replaceChildren(h("p", { class: "note" }, localData?.message || "Could not read the BIOS folder."));
     } else {
       localFiles = localData.files;
@@ -1544,6 +1572,8 @@ function biosManagerBody(platform) {
   const node = h("div", null,
     requiredSection,
     search,
+    statuses.length ? missingTitle : null,
+    statuses.length ? missingList : null,
     rommTitle,
     rommList,
     localTitle,

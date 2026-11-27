@@ -618,6 +618,25 @@ class UnitTests(unittest.TestCase):
             self.assertEqual(missing_emulator_bios("xemu-emu", bios), [], "names match case-insensitively")
             self.assertEqual(missing_emulator_bios("retroarch", bios), [])
 
+    def test_dreamcast_bios_requirements_are_platform_level(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = os.path.join(tmp, "dreamcast")
+            os.makedirs(folder)
+            with open(os.path.join(folder, "dc_boot.bin"), "wb") as handle:
+                handle.write(b"\0" * (2 * 1024 * 1024))
+            with open(os.path.join(folder, "dc_flash.bin"), "wb") as handle:
+                handle.write(b"\0" * (128 * 1024))
+            status = {entry["name"]: entry["status"] for entry in bios_status("flycast", tmp, "dreamcast")}
+            self.assertEqual(status, {"dc_boot.bin": "present", "dc_flash.bin": "present"})
+            self.assertEqual(missing_emulator_bios("flycast", tmp, "dreamcast"), [])
+            root_only = os.path.join(tmp, "root-only")
+            os.makedirs(root_only)
+            with open(os.path.join(root_only, "dc_boot.bin"), "wb") as handle:
+                handle.write(b"\0" * (2 * 1024 * 1024))
+            misplaced = {entry["name"]: entry for entry in bios_status("flycast", root_only, "dreamcast")}
+            self.assertEqual(misplaced["dc_boot.bin"]["status"], "misplaced")
+            self.assertTrue(misplaced["dc_boot.bin"]["can_repair"])
+
     def test_storage_status_reads_the_xemu_disk_and_eeprom(self):
         with tempfile.TemporaryDirectory() as tmp:
             storage = os.path.join(tmp, "storage", "xemu")

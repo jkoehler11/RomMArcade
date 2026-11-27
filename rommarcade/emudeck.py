@@ -237,6 +237,16 @@ EMULATOR_BIOS_SPEC: dict[str, list[dict[str, Any]]] = {
     ],
 }
 EMULATOR_BIOS_SPEC["xemu"] = EMULATOR_BIOS_SPEC["xemu-emu"]
+
+# A few systems need the same files whichever emulator/core runs them.  These
+# are the EmuDeck requirements (RetroBIOS) and are merged with the launcher's
+# own list; keep this to files that are genuinely required, not region variants.
+PLATFORM_BIOS: dict[str, list[dict[str, Any]]] = {
+    "dreamcast": [
+        {"name": "dc_boot.bin", "size": 2 * 1024 * 1024, "aliases": [], "folder": "platform"},
+        {"name": "dc_flash.bin", "size": 128 * 1024, "aliases": [], "folder": "platform"},
+    ],
+}
 EMULATOR_BIOS: dict[str, list[str]] = {
     key: [entry["name"] for entry in entries] for key, entries in EMULATOR_BIOS_SPEC.items()
 }
@@ -251,7 +261,10 @@ def _folder_files(folder: str) -> dict[str, str]:
 
 def bios_status(launcher_id: str, bios_root: str, platform_slug: str = "") -> list[dict[str, Any]]:
     """Where each required BIOS file is, whether its size is right, and how to fix it."""
-    specs = EMULATOR_BIOS_SPEC.get((launcher_id or "").casefold(), [])
+    specs = list(EMULATOR_BIOS_SPEC.get((launcher_id or "").casefold(), []))
+    specs += list(PLATFORM_BIOS.get((platform_slug or "").casefold(), []))
+    seen: set[str] = set()
+    specs = [spec for spec in specs if not (spec["name"].casefold() in seen or seen.add(spec["name"].casefold()))]
     if not specs:
         return []
     root_files = _folder_files(bios_root) if bios_root else {}
@@ -262,27 +275,35 @@ def bios_status(launcher_id: str, bios_root: str, platform_slug: str = "") -> li
         name = spec["name"]
         size = int(spec["size"])
         aliases = list(spec.get("aliases") or [])
+        in_platform = spec.get("folder") == "platform" and bool(platform_folder)
+        target_folder = platform_folder if in_platform else bios_root
+        target_files = platform_files if in_platform else root_files
+        other_folder = bios_root if in_platform else platform_folder
+        other_files = root_files if in_platform else platform_files
         entry: dict[str, Any] = {
             "name": name,
             "size": size,
-            "path": os.path.join(bios_root, name) if bios_root else "",
+            "path": os.path.join(target_folder, name) if target_folder else "",
+            "aliases": aliases,
             "found": "",
             "actual_size": 0,
             "status": "missing",
             "can_repair": False,
         }
-        actual_name = root_files.get(name.casefold())
+        # Exact name where the emulator reads it.
+        actual_name = target_files.get(name.casefold())
         if actual_name:
-            path = os.path.join(bios_root, actual_name)
+            path = os.path.join(target_folder, actual_name)
             actual = os.path.getsize(path)
             entry.update(found=path, actual_size=actual)
             entry["status"] = "present" if actual == size else "invalid"
             out.append(entry)
             continue
+        # A known alias in the right folder is usable as-is.
         for alias in aliases:
-            actual_name = root_files.get(alias.casefold())
+            actual_name = target_files.get(alias.casefold())
             if actual_name:
-                path = os.path.join(bios_root, actual_name)
+                path = os.path.join(target_folder, actual_name)
                 actual = os.path.getsize(path)
                 entry.update(found=path, actual_size=actual)
                 entry["status"] = "alias" if actual == size else "invalid"
@@ -291,10 +312,11 @@ def bios_status(launcher_id: str, bios_root: str, platform_slug: str = "") -> li
         if entry["found"]:
             out.append(entry)
             continue
+        # The right file in the other location can be copied into place.
         for candidate in [name] + aliases:
-            actual_name = platform_files.get(candidate.casefold())
+            actual_name = other_files.get(candidate.casefold()) if other_folder else None
             if actual_name:
-                path = os.path.join(platform_folder, actual_name)
+                path = os.path.join(other_folder, actual_name)
                 actual = os.path.getsize(path)
                 entry.update(found=path, actual_size=actual)
                 entry["status"] = "misplaced" if actual == size else "invalid"
@@ -314,7 +336,7 @@ def repair_emulator_bios(launcher_id: str, bios_root: str, platform_slug: str = 
             continue
         if entry["can_repair"] and entry["found"]:
             try:
-                os.makedirs(bios_root, exist_ok=True)
+                os.makedirs(os.path.dirname(entry["path"]) or bios_root, exist_ok=True)
                 shutil.copy2(entry["found"], entry["path"])
                 result["copied"].append({"name": entry["name"], "from": entry["found"]})
             except OSError as exc:

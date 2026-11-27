@@ -9,9 +9,69 @@ class ApiError extends Error {
   }
 }
 
+const LOADING_DELAY_MS = 220;
+const LOADING_MIN_MS = 500;
+let loadingCount = 0;
+let loadingTimer = null;
+let loadingShownAt = 0;
+let loadingNode = null;
+let hideTimer = null;
+
+function loadingOverlay() {
+  if (loadingNode) return loadingNode;
+  if (!document.body) return null;
+  loadingNode = document.createElement("div");
+  loadingNode.className = "retro-loading";
+  loadingNode.hidden = true;
+  loadingNode.setAttribute("role", "status");
+  loadingNode.setAttribute("aria-live", "polite");
+  loadingNode.innerHTML = `
+    <div class="retro-loading-card">
+      <div class="retro-loading-brand">ROMM <span>ARCADE</span></div>
+      <div class="retro-loading-title">LOADING FROM ROMM</div>
+      <div class="retro-loading-bar" aria-hidden="true">${"<i></i>".repeat(8)}</div>
+      <div class="retro-loading-note">READING THE LIBRARY · PLEASE STAND BY</div>
+    </div>`;
+  document.body.append(loadingNode);
+  return loadingNode;
+}
+
+function showLoading() {
+  const node = loadingOverlay();
+  if (!node) return;
+  node.hidden = false;
+  loadingShownAt = Date.now();
+  requestAnimationFrame(() => node.classList.add("on"));
+}
+
+function hideLoading() {
+  if (!loadingNode) return;
+  loadingNode.classList.remove("on");
+  loadingNode.hidden = true;
+}
+
+function beginLoading() {
+  loadingCount += 1;
+  if (loadingCount > 1) return;
+  clearTimeout(hideTimer);
+  loadingTimer = setTimeout(showLoading, LOADING_DELAY_MS);
+}
+
+function endLoading() {
+  loadingCount = Math.max(0, loadingCount - 1);
+  if (loadingCount) return;
+  clearTimeout(loadingTimer);
+  loadingTimer = null;
+  if (!loadingNode || loadingNode.hidden) return;
+  const wait = Math.max(0, LOADING_MIN_MS - (Date.now() - loadingShownAt));
+  clearTimeout(hideTimer);
+  hideTimer = setTimeout(hideLoading, wait);
+}
+
 async function request(path, { method = "GET", body = null, timeout = 30000 } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
+  beginLoading();
   try {
     const response = await fetch(path, {
       method,
@@ -33,6 +93,7 @@ async function request(path, { method = "GET", body = null, timeout = 30000 } = 
     throw error;
   } finally {
     clearTimeout(timer);
+    endLoading();
   }
 }
 
