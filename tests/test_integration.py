@@ -684,7 +684,7 @@ class UnitTests(unittest.TestCase):
             self.assertEqual(status["hdd"]["virtual_size"], 8 * 1024 ** 3)
             self.assertEqual(status["eeprom"]["status"], "present")
 
-    def test_xemu_launches_an_iso_with_cdrom(self):
+    def test_xemu_launches_an_iso_with_dvd_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             launcher = os.path.join(tmp, "xemu-emu.sh")
             with open(launcher, "w") as handle:
@@ -698,7 +698,7 @@ class UnitTests(unittest.TestCase):
             command = build_command(
                 {"launcher": "xemu-emu", "launcher_path": launcher, "name": "Xbox"}, game
             )
-            self.assertEqual(command[-2:], ["-cdrom", iso])
+            self.assertEqual(command[-2:], ["-dvd_path", iso])
             bare = os.path.join(tmp, "loose")
             os.makedirs(bare)
             with self.assertRaises(EmuDeckError):

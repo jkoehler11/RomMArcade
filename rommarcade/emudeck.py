@@ -1436,7 +1436,7 @@ def build_command(mapping: dict[str, Any], file_path: str) -> list[str]:
                 "xemu needs an XISO disc image, but this game is installed as loose files. "
                 "Repack it with xdvdfs, or install it from an .iso."
             )
-        return command + ["-cdrom", disc]
+        return command + ["-dvd_path", disc]
     if mapping.get("launcher") == "retroarch" and mapping.get("core"):
         command += ["-L", mapping["core"]]
     command.append(file_path)
