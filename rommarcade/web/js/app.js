@@ -558,8 +558,6 @@ async function renderGame(id, token, tab = "") {
   } else {
     actions.push(h("a", { class: "btn", href: "#/emudeck" }, icon("settings"), library.configured ? "Fix this platform's folder" : "Set up game folders"));
   }
-  actions.push(h("a", { class: "btn ghost", href: `#/platform/${encodeURIComponent(rom.platform_fs_slug || "")}` }, "Back to platform"));
-
   const facts = h("div", { class: "facts" },
     fact("Platform", rom.platform_name || rom.platform_fs_slug),
     fact("Size", rom.size ? fmtBytes(rom.size) : "Unknown"),
@@ -668,7 +666,19 @@ async function renderGame(id, token, tab = "") {
         : null,
   ].filter(Boolean);
 
+  const platformSlug = rom.platform_fs_slug || platform?.fs_slug || platform?.slug || "";
+  const breadcrumbs = h("nav", { class: "breadcrumbs", "aria-label": "Breadcrumb" },
+    h("a", { href: "#/library" }, "Library"),
+    h("span", { class: "sep", "aria-hidden": "true" }, "/"),
+    platformSlug
+      ? h("a", { href: `#/platform/${encodeURIComponent(platformSlug)}` }, rom.platform_name || platformSlug)
+      : h("span", null, rom.platform_name || "Platform"),
+    h("span", { class: "sep", "aria-hidden": "true" }, "/"),
+    h("span", { "aria-current": "page" }, rom.name),
+  );
+
   const body = h("div", null,
+    breadcrumbs,
     h("div", { class: "game-hero" },
       art,
       h("div", null,
