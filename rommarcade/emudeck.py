@@ -142,7 +142,7 @@ CORES: dict[str, list[str]] = {
     "mame": ["mame", "fbneo"],
     "saturn": ["kronos", "mednafen_saturn"],
     "psp": ["ppsspp"],
-    "nds": ["melonds", "desmume"],
+    "nds": ["melondsds", "melonds", "desmume"],
     "virtualboy": ["mednafen_vb"],
     "wonderswan": ["mednafen_wswan"],
     "wonderswancolor": ["mednafen_wswan"],
