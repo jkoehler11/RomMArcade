@@ -1439,6 +1439,7 @@ function biosManagerBody(platform) {
     },
   });
 
+  const upload = h("button", { class: "btn primary", disabled: true }, icon("upload"), "Upload to RomM");
   const choose = h("button", { class: "btn" }, icon("folder"), "Choose files");
   const input = h("input", {
     type: "file",
@@ -1447,10 +1448,10 @@ function biosManagerBody(platform) {
     onChange: (event) => {
       const count = event.target.files?.length || 0;
       choose.replaceChildren(icon("folder"), count ? `${count} file${count === 1 ? "" : "s"} chosen` : "Choose files");
+      upload.disabled = count === 0;
     },
   });
   choose.addEventListener("click", () => input.click());
-  const upload = h("button", { class: "btn primary" }, icon("upload"), "Upload to RomM");
   upload.addEventListener("click", async () => {
     const files = Array.from(input.files || []);
     if (!files.length) { toast("Choose a BIOS file first", "info"); return; }
@@ -1469,7 +1470,7 @@ function biosManagerBody(platform) {
       choose.replaceChildren(icon("folder"), "Choose files");
       await reload();
     } catch (error) { toast(error.message, "bad"); }
-    finally { upload.disabled = false; }
+    finally { upload.disabled = !(input.files?.length); }
   });
 
   const requiredSection = required.length
