@@ -118,6 +118,23 @@ function paintServerPill() {
     : "Connect a RomM server";
 }
 
+function rommUrl(path) {
+  const base = String(state.status?.server?.url || "").replace(/\/+$/, "");
+  return base ? `${base}${path}` : "";
+}
+
+function openInRomm(path, cls = "btn ghost", label = "Open in RomM") {
+  const href = rommUrl(path);
+  if (!href) return null;
+  return h("a", {
+    class: cls,
+    href,
+    target: "_blank",
+    rel: "noopener noreferrer",
+    title: label,
+  }, icon("external"), label);
+}
+
 // ---------------------------------------------------------------- route ---
 function parseRoute() {
   const raw = location.hash.replace(/^#\/?/, "");
@@ -389,6 +406,9 @@ async function renderPlatform(slug, token) {
       ),
     ),
     h("div", { class: "page-actions" },
+      platform.id != null
+        ? openInRomm(`/platform/${encodeURIComponent(String(platform.id))}`, "btn", "Open in RomM")
+        : null,
       enabled && (local.storage_status || []).length && state.status?.emudeck?.usable
         ? h("button", { class: "btn", onClick: () => openSetup(platform) }, icon("settings"), "Setup")
         : null,
@@ -560,6 +580,9 @@ async function renderGame(id, token, tab = "") {
   } else {
     actions.push(h("a", { class: "btn", href: "#/emudeck" }, icon("settings"), library.configured ? "Fix this platform's folder" : "Set up game folders"));
   }
+  const rommLink = openInRomm(`/rom/${encodeURIComponent(String(rom.id))}`, "btn ghost", "Open in RomM");
+  if (rommLink) actions.push(rommLink);
+
   const facts = h("div", { class: "facts" },
     fact("Platform", rom.platform_name || rom.platform_fs_slug),
     fact("Size", rom.size ? fmtBytes(rom.size) : "Unknown"),
