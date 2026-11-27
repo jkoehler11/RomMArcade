@@ -1419,6 +1419,28 @@ def xemu_disc_path(file_path: str) -> str:
     return sibling if os.path.isfile(sibling) else ""
 
 
+RYUJINX_EXTENSIONS = (".nsp", ".xci", ".nca", ".nro", ".kip", ".kipx")
+
+
+def ryujinx_game_path(file_path: str) -> str:
+    """Ryujinx opens a game file, not an install folder; pick the largest NSP/XCI."""
+    if os.path.isfile(file_path) and file_path.casefold().endswith(RYUJINX_EXTENSIONS):
+        return file_path
+    if not os.path.isdir(file_path):
+        return ""
+    candidates: list[tuple[int, str]] = []
+    for dirpath, dirnames, filenames in os.walk(file_path):
+        dirnames[:] = [name for name in dirnames if not name.startswith(".")]
+        for filename in filenames:
+            if filename.casefold().endswith(RYUJINX_EXTENSIONS):
+                path = os.path.join(dirpath, filename)
+                try:
+                    candidates.append((os.path.getsize(path), path))
+                except OSError:
+                    continue
+    return max(candidates)[1] if candidates else ""
+
+
 def build_command(mapping: dict[str, Any], file_path: str) -> list[str]:
     launcher = mapping.get("launcher_path") or ""
     if not launcher or not os.path.exists(launcher):
@@ -1437,6 +1459,13 @@ def build_command(mapping: dict[str, Any], file_path: str) -> list[str]:
                 "Repack it with xdvdfs, or install it from an .iso."
             )
         return command + ["-dvd_path", disc]
+    if mapping.get("launcher") in ("ryujinx", "ryujinx-canary"):
+        game = ryujinx_game_path(file_path)
+        if not game:
+            raise EmuDeckError(
+                "Ryujinx needs an NSP or XCI game file, but this install contains only loose files."
+            )
+        return command + [game]
     if mapping.get("launcher") == "retroarch" and mapping.get("core"):
         command += ["-L", mapping["core"]]
     command.append(file_path)

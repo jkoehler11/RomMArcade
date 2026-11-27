@@ -32,6 +32,7 @@ from rommarcade.emudeck import (
     ALIASES,
     EmuDeckError,
     build_command,
+    ryujinx_game_path,
     choose_core,
     choose_launcher,
     create_library,
@@ -683,6 +684,32 @@ class UnitTests(unittest.TestCase):
             self.assertEqual(status["hdd"]["status"], "present")
             self.assertEqual(status["hdd"]["virtual_size"], 8 * 1024 ** 3)
             self.assertEqual(status["eeprom"]["status"], "present")
+
+    def test_ryujinx_picks_a_game_file_from_an_install_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            launcher = os.path.join(tmp, "ryujinx.sh")
+            with open(launcher, "w") as handle:
+                handle.write("")
+            os.chmod(launcher, 0o755)
+            game = os.path.join(tmp, "Pikmin 3 Deluxe")
+            os.makedirs(game)
+            base = os.path.join(game, "Pikmin 3 Deluxe [0100f4c009322000] [v0].nsp")
+            update = os.path.join(game, "Pikmin 3 Deluxe [0100F4C009322800] [v65536].nsp")
+            with open(base, "wb") as handle:
+                handle.write(b"base-content")
+            with open(update, "wb") as handle:
+                handle.write(b"update")
+            self.assertEqual(ryujinx_game_path(game), base)
+            command = build_command(
+                {"launcher": "ryujinx", "launcher_path": launcher, "name": "Switch"}, game
+            )
+            self.assertEqual(command[-1], base)
+            bare = os.path.join(tmp, "loose")
+            os.makedirs(bare)
+            with self.assertRaises(EmuDeckError):
+                build_command(
+                    {"launcher": "ryujinx", "launcher_path": launcher, "name": "Switch"}, bare
+                )
 
     def test_xemu_launches_an_iso_with_dvd_path(self):
         with tempfile.TemporaryDirectory() as tmp:
