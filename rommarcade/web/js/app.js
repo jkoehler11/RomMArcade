@@ -239,6 +239,19 @@ async function renderLibrary(token) {
 
   const frag = document.createDocumentFragment();
   frag.append(heroBlock(featured, installs.length));
+  const installsByRom = new Map(installs.map((entry) => [Number(entry.rom_id), entry]));
+  const continueEntries = (state.history || [])
+    .map((entry) => ({ entry, install: installsByRom.get(Number(entry.rom_id)) }))
+    .filter((item) => item.install)
+    .slice(0, 8);
+  if (continueEntries.length) {
+    frag.append(rail("Continue playing", `${continueEntries.length} recent`, continueEntries.map(({ entry, install }) =>
+      gameCard(withInstallJob(pseudoRomFromInstall(install)), {
+        showPlay: playable,
+        eager: true,
+        playedAt: entry.played_at,
+      }))));
+  }
   frag.append(emudeckStrip(withGames));
   frag.append(platformRail(withGames, ""));
   if (roms.length) frag.append(rail("Recently added", `${recent.total} in library`, roms.map((r) => gameCard(withInstallJob(r), { showPlay: playable }))));
@@ -1331,6 +1344,7 @@ async function playRom(romId) {
       ? ` · ${pulled} save${pulled === 1 ? "" : "s"} synced`
       : pushed ? ` · ${pushed} save${pushed === 1 ? "" : "s"} uploaded` : "";
     toast(`Launching ${result.launcher || "the emulator"}${result.core ? " (" + result.core + ")" : ""}${note}`, "good");
+    rememberPlayed(romId);
     refreshSavesViews();
   } catch (error) {
     if (error.payload?.save_conflict || error.payload?.save_sync) {
@@ -1350,6 +1364,21 @@ async function playRom(romId) {
   } finally {
     setPlayBusy(romId, false);
   }
+}
+
+function rememberPlayed(romId) {
+  const install = (state.installs || []).find((entry) => Number(entry.rom_id) === Number(romId));
+  if (!install) return;
+  state.history = [
+    {
+      rom_id: install.rom_id,
+      name: install.name,
+      platform: install.platform,
+      played_at: new Date().toISOString(),
+    },
+    ...(state.history || []).filter((entry) => Number(entry.rom_id) !== Number(romId)),
+  ];
+  if (parseRoute().name === "library") renderLibrary(++state.renderToken);
 }
 
 function biosManagerBody(platform) {

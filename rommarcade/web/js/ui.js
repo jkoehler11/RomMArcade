@@ -174,7 +174,7 @@ function fallbackCover(rom) {
   );
 }
 
-export function gameCard(rom, { showPlay = true, eager = false } = {}) {
+export function gameCard(rom, { showPlay = true, eager = false, playedAt = "" } = {}) {
   const installed = Boolean(rom.installed);
   const job = rom.install_job || null;
   const installing = Boolean(job);
@@ -231,6 +231,7 @@ export function gameCard(rom, { showPlay = true, eager = false } = {}) {
     h("p", { class: "game-sub" },
       h("span", null, rom.platform_name || rom.platform_fs_slug || "Unknown"),
       h("span", { class: "size" }, rom.size ? fmtBytes(rom.size) : ""),
+      playedAt ? h("span", { class: "played" }, timeAgo(playedAt)) : null,
     ),
   ));
   return card;
