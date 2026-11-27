@@ -3072,6 +3072,15 @@ async function scanMigration(button) {
   if (button) button.disabled = true;
   try {
     const result = await api.migrateScan();
+    const totals = result.totals || {};
+    if (!totals.files) {
+      toast("Everything is already in the active EmuDeck folder.", "good");
+      return;
+    }
+    if (!totals.move_files) {
+      toast(`No files need moving${totals.conflict_files ? `; ${totals.conflict_files} conflicting files were left untouched` : ""}.`, "info");
+      return;
+    }
     openMigrationModal(result);
   } catch (error) { toast(error.message, "bad"); }
   finally { if (button) button.disabled = false; }
@@ -3125,6 +3134,8 @@ function openMigrationModal(result) {
     totals.conflict_files
       ? h("p", { class: "note" }, `${totals.conflict_files} files conflict with existing files and will be left untouched.`)
       : null,
+    h("p", { class: "note" },
+      "This checks the folders beside the active Emulation tree for BIOS, games, saves and storage; loose files elsewhere are not included."),
     h("div", { class: "row end sheet-actions" },
       h("button", { class: "btn ghost", onClick: closeModal }, "Cancel"),
       moveButton,
