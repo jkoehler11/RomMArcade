@@ -238,6 +238,91 @@ EMULATOR_BIOS_SPEC: dict[str, list[dict[str, Any]]] = {
 }
 EMULATOR_BIOS_SPEC["xemu"] = EMULATOR_BIOS_SPEC["xemu-emu"]
 
+
+def cemu_keys_path() -> str:
+    """Cemu's user-data keys file, which is separate from the EmuDeck BIOS copy."""
+    if sys.platform == "darwin":
+        return os.path.join(os.path.expanduser("~"), "Library", "Application Support", "Cemu", "keys.txt")
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+        return os.path.join(base, "Cemu", "keys.txt")
+    return os.path.join(os.path.expanduser("~"), ".local", "share", "Cemu", "keys.txt")
+
+
+def _key_values(path: str) -> list[str]:
+    """Read the key lines Cemu understands without ever exposing their values."""
+    values: list[str] = []
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            for raw in handle:
+                value = raw.split("#", 1)[0].strip()
+                if re.fullmatch(r"[0-9A-Fa-f]{32}|[0-9A-Fa-f]{48}", value):
+                    values.append(value)
+    except OSError:
+        return []
+    return values
+
+
+def cemu_keys_status(emulation_root: str, dest: str = "") -> dict[str, Any]:
+    source = os.path.join(emulation_root, "bios", "keys.txt") if emulation_root else ""
+    target = dest or cemu_keys_path()
+    source_values = _key_values(source) if source else []
+    target_values = _key_values(target) if target else []
+    known = {item.casefold() for item in target_values}
+    missing = [value for value in source_values if value.casefold() not in known]
+    return {
+        "source": source,
+        "target": target,
+        "source_keys": len(source_values),
+        "target_keys": len(target_values),
+        "missing_keys": len(missing),
+        "present": bool(target_values) and not missing,
+    }
+
+
+def sync_cemu_keys(emulation_root: str, dest: str = "") -> dict[str, Any]:
+    """Merge EmuDeck's disc keys into Cemu's own keys file.
+
+    EmuDeck keeps a full key database in ``bios/keys.txt``. Cemu reads its own
+    user-data copy; a fresh install often contains only the common key and then
+    fails every encrypted WUD/WUX with "Could not decrypt title". Merge instead
+    of replace so user-added keys survive, and keep a timestamped backup.
+    """
+    source = os.path.join(emulation_root, "bios", "keys.txt") if emulation_root else ""
+    target = dest or cemu_keys_path()
+    if not source or not os.path.isfile(source):
+        return {"status": "no-source", **cemu_keys_status(emulation_root, target)}
+    source_values = _key_values(source)
+    target_values = _key_values(target)
+    known = {value.casefold() for value in target_values}
+    missing = [value for value in source_values if value.casefold() not in known]
+    if not missing:
+        return {"status": "present", **cemu_keys_status(emulation_root, target)}
+    try:
+        os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
+        backup = ""
+        if os.path.isfile(target):
+            backup = f"{target}.bak-{time.strftime('%Y%m%d-%H%M%S')}"
+            shutil.copy2(target, backup)
+            with open(target, "a", encoding="utf-8") as handle:
+                handle.write("\n")
+                handle.write("\n".join(missing))
+                handle.write("\n")
+        else:
+            shutil.copy2(source, target)
+        os.chmod(target, 0o600)
+    except OSError as exc:
+        raise EmuDeckError(
+            f"Cemu's key file could not be updated at {target}: {exc}. "
+            "Copy Emulation/bios/keys.txt there manually and try again."
+        ) from exc
+    return {
+        "status": "updated",
+        "added": len(missing),
+        "backup": backup,
+        **cemu_keys_status(emulation_root, target),
+    }
+
 # A few systems need the same files whichever emulator/core runs them.  These
 # are the EmuDeck requirements (RetroBIOS) and are merged with the launcher's
 # own list; keep this to files that are genuinely required, not region variants.
@@ -1515,6 +1600,10 @@ def build_command(mapping: dict[str, Any], file_path: str) -> list[str]:
                 "Ryujinx needs an NSP or XCI game file, but this install contains only loose files."
             )
         return command + [game]
+    if mapping.get("launcher") == "cemu":
+        # Cemu 2.x no longer treats a bare path as a game; it opens its game
+        # list unless the file is passed with -g.
+        return command + ["-g", file_path]
     if mapping.get("launcher") == "retroarch" and mapping.get("core"):
         core = mapping["core"]
         command += ["-L", retroarch_core_path(core) or core]

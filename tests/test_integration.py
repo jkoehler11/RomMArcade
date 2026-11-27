@@ -48,6 +48,7 @@ from rommarcade.emudeck import (
     bios_status,
     repair_emulator_bios,
     storage_status,
+    sync_cemu_keys,
     migration_move,
     migration_snapshot,
     rom_target_name,
@@ -726,6 +727,40 @@ class UnitTests(unittest.TestCase):
                 build_command(
                     {"launcher": "ryujinx", "launcher_path": launcher, "name": "Switch"}, bare
                 )
+
+    def test_cemu_uses_g_and_merges_the_disc_keys(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            launcher = os.path.join(tmp, "cemu.sh")
+            with open(launcher, "w") as handle:
+                handle.write("")
+            os.chmod(launcher, 0o755)
+            game = os.path.join(tmp, "Wind Waker HD.wux")
+            with open(game, "wb") as handle:
+                handle.write(b"wux")
+            command = build_command(
+                {"launcher": "cemu", "launcher_path": launcher, "name": "Wii U"}, game
+            )
+            self.assertEqual(command[-2:], ["-g", game])
+
+            bios = os.path.join(tmp, "bios")
+            os.makedirs(bios)
+            source = os.path.join(bios, "keys.txt")
+            target = os.path.join(tmp, "Cemu", "keys.txt")
+            os.makedirs(os.path.dirname(target))
+            common = "A" * 32
+            disc = "B" * 32
+            with open(source, "w") as handle:
+                handle.write(f"{common}\n{disc}\n")
+            with open(target, "w") as handle:
+                handle.write(f"{common}\n")
+            result = sync_cemu_keys(tmp, target)
+            self.assertEqual(result["status"], "updated")
+            self.assertEqual(result["added"], 1)
+            self.assertTrue(result["backup"])
+            with open(target) as handle:
+                keys = handle.read()
+            self.assertIn(common, keys)
+            self.assertIn(disc, keys)
 
     def test_xemu_launches_an_iso_with_dvd_path(self):
         with tempfile.TemporaryDirectory() as tmp:

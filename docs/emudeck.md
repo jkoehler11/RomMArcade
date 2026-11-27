@@ -31,6 +31,10 @@ arcade, …) and falls back to the launcher's own default if none is found.
 Launches are detached from the service and inherit the graphical session (`XDG_RUNTIME_DIR`,
 `WAYLAND_DISPLAY` by socket discovery), so closing the browser does not close the game.
 
+Cemu needs its own `keys.txt` in Cemu's user-data folder, not only the copy under
+`Emulation/bios/`. RomMArcade merges the EmuDeck key database into Cemu's file before launching a
+Wii U game and keeps a timestamped backup, so encrypted WUD/WUX discs can be decrypted.
+
 ## The on/off switch
 
 **Settings → EmuDeck** (or the EmuDeck page) toggles the whole integration. With it off, install,

@@ -38,6 +38,7 @@ from .emudeck import (
     EmuDeckError,
     bios_target,
     build_command,
+    cemu_keys_status,
     download_emulator_storage,
     migration_move,
     migration_snapshot,
@@ -56,6 +57,7 @@ from .emudeck import (
     spawn,
     spawn_process,
     suggest_library_root,
+    sync_cemu_keys,
 )
 from .romm import RomMClient, RomMError
 from .saves import SaveSyncError, SaveSyncService
@@ -1409,14 +1411,26 @@ class App:
                 rom_id=rom_id,
             )
         command = build_command(mapping, installed["path"])
+        emu_root = detect_emudeck(self.config.get()).get("root") or ""
+        cemu_keys: dict[str, Any] | None = None
+        if mapping.get("launcher") == "cemu":
+            cemu_keys = cemu_keys_status(emu_root)
+            if not dry_run:
+                cemu_keys = sync_cemu_keys(emu_root)
+                self.log(
+                    f"cemu keys {cemu_keys.get('status')} "
+                    f"({cemu_keys.get('target_keys', 0)} keys)"
+                )
         if dry_run:
-            return {"dry_run": True, "command": command, "rom": rom_id, "path": installed["path"]}
+            result = {"dry_run": True, "command": command, "rom": rom_id, "path": installed["path"]}
+            if cemu_keys is not None:
+                result["cemu_keys"] = cemu_keys
+            return result
         if not os.path.exists(command[0]):
             raise HttpError(409, f"The {mapping.get('launcher_name') or 'emulator'} launcher is missing.")
         # A launch must not start on a stale save: the game's saves are brought
         # in step with RomM first, and a save that cannot be restored or that
         # changed on both sides stops the launch instead of picking a winner.
-        emu_root = detect_emudeck(self.config.get()).get("root") or ""
         sync: dict[str, Any] | None = None
         try:
             sync = self.save_sync.before_play(rom, mapping, emu_root, self.client(), self.active_server())
