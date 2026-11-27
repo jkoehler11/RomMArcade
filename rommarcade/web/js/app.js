@@ -1338,8 +1338,7 @@ function biosManagerBody(platform) {
       return;
     }
     const shown = showAllRomm ? filtered : filtered.slice(0, LIMIT);
-    rommList.replaceChildren(
-      ...shown.map((file) => {
+    const children = shown.map((file) => {
         const del = h("button", { class: "btn small danger" }, icon("trash"), "Delete");
         del.addEventListener("click", async () => {
           if (!window.confirm(`Delete ${file.file_name} from RomM? This removes it from the server's BIOS folder.`)) return;
@@ -1375,15 +1374,15 @@ function biosManagerBody(platform) {
           });
         }
         return row(file.file_name, `${fmtBytes(Number(file.file_size_bytes) || 0)} · RomM`, [localAction, del]);
-      }),
-      filtered.length > LIMIT
-        ? h("button", {
-            class: "btn small ghost",
-            style: { marginTop: "8px" },
-            onClick: () => { showAllRomm = !showAllRomm; drawRomm(); },
-          }, showAllRomm ? "Show fewer" : `Show all ${filtered.length}`)
-        : null,
-    );
+    });
+    if (filtered.length > LIMIT) {
+      children.push(h("button", {
+        class: "btn small ghost",
+        style: { marginTop: "8px" },
+        onClick: () => { showAllRomm = !showAllRomm; drawRomm(); },
+      }, showAllRomm ? "Show fewer" : `Show all ${filtered.length}`));
+    }
+    rommList.replaceChildren(...children);
   };
 
   const drawLocal = () => {
@@ -1398,8 +1397,7 @@ function biosManagerBody(platform) {
       return;
     }
     const shown = showAllLocal ? filtered : filtered.slice(0, LIMIT);
-    localList.replaceChildren(
-      ...shown.map((file) => {
+    const children = shown.map((file) => {
         const del = h("button", { class: "btn small danger" }, icon("trash"), "Delete");
         del.addEventListener("click", async () => {
           if (!window.confirm(`Delete ${file.name} from this machine's BIOS folder?`)) return;
@@ -1411,15 +1409,15 @@ function biosManagerBody(platform) {
           } catch (error) { del.disabled = false; toast(error.message, "bad"); }
         });
         return row(file.name, `${fmtBytes(Number(file.size) || 0)} · this machine`, [del]);
-      }),
-      filtered.length > LIMIT
-        ? h("button", {
-            class: "btn small ghost",
-            style: { marginTop: "8px" },
-            onClick: () => { showAllLocal = !showAllLocal; drawLocal(); },
-          }, showAllLocal ? "Show fewer" : `Show all ${filtered.length}`)
-        : null,
-    );
+    });
+    if (filtered.length > LIMIT) {
+      children.push(h("button", {
+        class: "btn small ghost",
+        style: { marginTop: "8px" },
+        onClick: () => { showAllLocal = !showAllLocal; drawLocal(); },
+      }, showAllLocal ? "Show fewer" : `Show all ${filtered.length}`));
+    }
+    localList.replaceChildren(...children);
   };
 
   const reload = async () => {
