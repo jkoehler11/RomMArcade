@@ -1525,6 +1525,16 @@ def spawn_process(command: list[str], log_file: str, env: dict[str, str] | None 
                         user_env["WAYLAND_DISPLAY"] = os.path.basename(socket)
                         break
         user_env.setdefault("DISPLAY", ":0")
+        # PyInstaller points LD_LIBRARY_PATH at the app bundle; an AppImage
+        # emulator that inherits it loads the bundle's Qt/libc instead of its
+        # own and segfaults before opening a window. Strip the packaging vars.
+        for name in ("LD_LIBRARY_PATH", "PYTHONHOME", "PYTHONPATH"):
+            user_env.pop(name, None)
+        # Azahar's AppImage bundles Qt without the Wayland platform plugin; forcing
+        # X11 through XWayland avoids its "Could not find the Qt platform plugin"
+        # segfault when the desktop session exports QT_QPA_PLATFORM=wayland.
+        if any("azahar" in os.path.basename(part).casefold() for part in command):
+            user_env["QT_QPA_PLATFORM"] = "xcb"
         user_env["PATH"] = user_env.get("PATH", "") + ":" + os.path.expanduser("~/.local/bin")
     os.makedirs(os.path.dirname(log_file) or ".", exist_ok=True)
     handle = open(log_file, "ab", buffering=0)
