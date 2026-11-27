@@ -38,6 +38,7 @@ from .emudeck import (
     EmuDeckError,
     bios_target,
     build_command,
+    repair_emulator_bios,
     create_library,
     detect as detect_emudeck,
     install_path,
@@ -1037,6 +1038,20 @@ class App:
         if route == ("POST", "/api/bios/local/delete"):
             return 200, JSON, self.delete_bios_local(body or {})
 
+        if route == ("POST", "/api/bios/repair"):
+            data = body or {}
+            platform_id = int(data.get("platform_id") or 0)
+            if platform_id <= 0:
+                raise HttpError(400, "A platform_id is required.")
+            context = self._bios_context(platform_id)
+            result = repair_emulator_bios(
+                context["mapping"].get("launcher") or "",
+                context["root"],
+                context["slug"],
+            )
+            self._cache_clear()
+            return 200, JSON, result
+
         if route == ("POST", "/api/firmware/upload"):
             return 200, JSON, self.upload_firmware(body or {})
 
@@ -1600,6 +1615,7 @@ def _public_mapping(mapping: dict[str, Any], enabled: bool = True) -> dict[str, 
         "launcher_url": mapping.get("launcher_url") or "",
         "bios_required": list(mapping.get("bios_required") or []),
         "bios_missing": list(mapping.get("bios_missing") or []),
+        "bios_status": [dict(entry) for entry in (mapping.get("bios_status") or [])],
         "bios_folder": mapping.get("bios_folder") or "",
         "core": mapping.get("core") or "",
         "source": mapping.get("source") or "",

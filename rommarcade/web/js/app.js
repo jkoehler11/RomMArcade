@@ -1279,8 +1279,14 @@ async function playRom(romId) {
 function biosManagerBody(platform) {
   const platformId = Number(platform.id);
   const local = platform.local || {};
-  const required = local.bios_required || [];
-  const missing = local.bios_missing || [];
+  const statuses = local.bios_status || (local.bios_required || []).map((name) => ({
+    name,
+    status: (local.bios_missing || []).includes(name) ? "missing" : "present",
+  }));
+  const statusLabel = {
+    present: "Present", invalid: "Wrong size", alias: "Wrong name",
+    misplaced: "Wrong folder", missing: "Missing",
+  };
   const rommTitle = h("div", { class: "section-title" }, "In RomM");
   const rommList = h("div");
   const localTitle = h("div", { class: "section-title", style: { marginTop: "18px" } }, "On this machine");
@@ -1473,17 +1479,48 @@ function biosManagerBody(platform) {
     finally { upload.disabled = !(input.files?.length); }
   });
 
-  const requiredSection = required.length
+  const repair = async (button) => {
+    button.disabled = true;
+    try {
+      const result = await api.repairBios(platformId);
+      const copied = result.copied?.length || 0;
+      const failed = result.failed || [];
+      if (copied) toast(`${copied} BIOS file${copied === 1 ? "" : "s"} put in place`, "good");
+      for (const item of failed) toast(`${item.name}: ${item.reason}`, "bad");
+      if (!copied && !failed.length) toast("Nothing to fix", "info");
+      route();
+      await reload();
+    } catch (error) { toast(error.message, "bad"); button.disabled = false; }
+  };
+  const canRepair = statuses.some((entry) => entry.can_repair);
+  const requiredSection = statuses.length
     ? h("div", { style: { marginBottom: "16px" } },
         h("div", { class: "section-title" }, "Required BIOS"),
-        ...required.map((name) => h("div", {
-          class: "row",
-          style: { justifyContent: "space-between", alignItems: "center", padding: "6px 0" },
-        },
-          h("span", null, name),
-          h("span", { class: `chip ${missing.includes(name) ? "" : "ok"}` },
-            missing.includes(name) ? "Missing" : "Present"),
-        )),
+        ...statuses.map((entry) => {
+          const note = entry.status === "invalid"
+            ? `${entry.actual_size || 0} bytes — expected ${entry.size || 0}`
+            : (entry.status === "alias" || entry.status === "misplaced") && entry.found
+              ? `Found ${entry.found}`
+              : "";
+          return h("div", {
+            class: "row",
+            style: { justifyContent: "space-between", alignItems: "center", padding: "6px 0" },
+          },
+            h("div", { style: { minWidth: "0" } },
+              h("div", { style: { fontWeight: "600", overflowWrap: "anywhere" } }, entry.name),
+              note ? h("div", { class: "note" }, note) : null,
+            ),
+            h("span", { class: `chip ${entry.status === "present" ? "ok" : ""}` },
+              statusLabel[entry.status] || entry.status),
+          );
+        }),
+        canRepair
+          ? h("button", {
+              class: "btn small",
+              style: { marginTop: "8px" },
+              onClick: (event) => repair(event.currentTarget),
+            }, icon("refresh"), "Fix placement")
+          : null,
         local.bios_folder ? h("p", { class: "note" }, `Folder: ${local.bios_folder}`) : null,
       )
     : null;

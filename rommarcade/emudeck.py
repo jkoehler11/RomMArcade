@@ -220,21 +220,116 @@ EMULATOR_WEBSITES = {
 # BIOS files an emulator cannot boot without when RomM does not track them as
 # firmware.  Keyed by launcher id; the files live directly in the EmuDeck BIOS
 # folder (xemu resolves them from <bios>/mcpx_1.0.bin and <bios>/Complex_4627*.bin).
+EMULATOR_BIOS_SPEC: dict[str, list[dict[str, Any]]] = {
+    "xemu-emu": [
+        {"name": "mcpx_1.0.bin", "size": 512, "aliases": []},
+        {
+            "name": "Complex_4627v1.03.bin",
+            "size": 1024 * 1024,
+            "aliases": [
+                "Complex_4627.bin", "Complex_4627v1.00.bin",
+                "Complex_4627v1.02.bin", "Complex_4627v1.04.bin",
+            ],
+        },
+    ],
+}
+EMULATOR_BIOS_SPEC["xemu"] = EMULATOR_BIOS_SPEC["xemu-emu"]
 EMULATOR_BIOS: dict[str, list[str]] = {
-    "xemu-emu": ["mcpx_1.0.bin", "Complex_4627v1.03.bin"],
-    "xemu": ["mcpx_1.0.bin", "Complex_4627v1.03.bin"],
+    key: [entry["name"] for entry in entries] for key, entries in EMULATOR_BIOS_SPEC.items()
 }
 
 
-def missing_emulator_bios(launcher_id: str, bios_root: str) -> list[str]:
-    required = EMULATOR_BIOS.get((launcher_id or "").lower(), [])
-    if not required:
-        return []
+def _folder_files(folder: str) -> dict[str, str]:
     try:
-        present = {name.lower() for name in os.listdir(bios_root)} if bios_root else set()
+        return {name.casefold(): name for name in os.listdir(folder)}
     except OSError:
-        present = set()
-    return [name for name in required if name.lower() not in present]
+        return {}
+
+
+def bios_status(launcher_id: str, bios_root: str, platform_slug: str = "") -> list[dict[str, Any]]:
+    """Where each required BIOS file is, whether its size is right, and how to fix it."""
+    specs = EMULATOR_BIOS_SPEC.get((launcher_id or "").casefold(), [])
+    if not specs:
+        return []
+    root_files = _folder_files(bios_root) if bios_root else {}
+    platform_folder = os.path.join(bios_root, platform_slug) if bios_root and platform_slug else ""
+    platform_files = _folder_files(platform_folder) if platform_folder else {}
+    out: list[dict[str, Any]] = []
+    for spec in specs:
+        name = spec["name"]
+        size = int(spec["size"])
+        aliases = list(spec.get("aliases") or [])
+        entry: dict[str, Any] = {
+            "name": name,
+            "size": size,
+            "path": os.path.join(bios_root, name) if bios_root else "",
+            "found": "",
+            "actual_size": 0,
+            "status": "missing",
+            "can_repair": False,
+        }
+        actual_name = root_files.get(name.casefold())
+        if actual_name:
+            path = os.path.join(bios_root, actual_name)
+            actual = os.path.getsize(path)
+            entry.update(found=path, actual_size=actual)
+            entry["status"] = "present" if actual == size else "invalid"
+            out.append(entry)
+            continue
+        for alias in aliases:
+            actual_name = root_files.get(alias.casefold())
+            if actual_name:
+                path = os.path.join(bios_root, actual_name)
+                actual = os.path.getsize(path)
+                entry.update(found=path, actual_size=actual)
+                entry["status"] = "alias" if actual == size else "invalid"
+                entry["can_repair"] = actual == size
+                break
+        if entry["found"]:
+            out.append(entry)
+            continue
+        for candidate in [name] + aliases:
+            actual_name = platform_files.get(candidate.casefold())
+            if actual_name:
+                path = os.path.join(platform_folder, actual_name)
+                actual = os.path.getsize(path)
+                entry.update(found=path, actual_size=actual)
+                entry["status"] = "misplaced" if actual == size else "invalid"
+                entry["can_repair"] = actual == size
+                break
+        out.append(entry)
+    return out
+
+
+def repair_emulator_bios(launcher_id: str, bios_root: str, platform_slug: str = "") -> dict[str, Any]:
+    """Copy a valid file found under the platform folder or an alias to its expected path."""
+    result: dict[str, Any] = {"copied": [], "failed": []}
+    if not bios_root:
+        return result
+    for entry in bios_status(launcher_id, bios_root, platform_slug):
+        if entry["status"] == "present":
+            continue
+        if entry["can_repair"] and entry["found"]:
+            try:
+                os.makedirs(bios_root, exist_ok=True)
+                shutil.copy2(entry["found"], entry["path"])
+                result["copied"].append({"name": entry["name"], "from": entry["found"]})
+            except OSError as exc:
+                result["failed"].append({"name": entry["name"], "reason": str(exc)})
+        elif entry["status"] == "invalid":
+            result["failed"].append({
+                "name": entry["name"],
+                "reason": f"{entry['actual_size']} bytes; expected {entry['size']}",
+            })
+    result["status"] = bios_status(launcher_id, bios_root, platform_slug)
+    return result
+
+
+def missing_emulator_bios(launcher_id: str, bios_root: str, platform_slug: str = "") -> list[str]:
+    return [
+        entry["name"] for entry in bios_status(launcher_id, bios_root, platform_slug)
+        if entry["status"] != "present"
+    ]
 
 
 _LAUNCHER_CACHE: dict[str, Any] = {"fingerprint": None, "data": None, "lock": threading.Lock()}
@@ -834,6 +929,7 @@ def platform_mapping(
         core = choose_core(fs_slug, set(cores)) if (launcher or {}).get("id") == "retroarch" else None
     launcher_key = (launcher or {}).get("id") or ""
     bios_root = roots.get("bios_root") or ""
+    bios_state = bios_status(launcher_key, bios_root, fs_slug)
     return {
         "platform": fs_slug,
         "slug": platform.get("slug"),
@@ -846,8 +942,9 @@ def platform_mapping(
         "launcher_path": (launcher or {}).get("path") or "",
         "launcher_ready": bool((launcher or {}).get("ready", False)),
         "launcher_url": EMULATOR_WEBSITES.get((launcher or {}).get("id") or "", ""),
-        "bios_required": EMULATOR_BIOS.get(launcher_key, []),
-        "bios_missing": missing_emulator_bios(launcher_key, bios_root),
+        "bios_required": [entry["name"] for entry in bios_state],
+        "bios_missing": [entry["name"] for entry in bios_state if entry["status"] != "present"],
+        "bios_status": bios_state,
         "bios_folder": bios_root,
         "core": core or "",
         "source": "override" if override else ("alias" if directory and directory.lower() != fs_slug.lower() else "catalogue"),
@@ -970,6 +1067,26 @@ def remove_game_saves(emulation_root: str, platform_dir: str, rom_stem: str) -> 
     return removed
 
 
+def xemu_disc_path(file_path: str) -> str:
+    """xemu only accepts an XISO image; find one for a loose-file game folder."""
+    if os.path.isfile(file_path) and file_path.casefold().endswith((".iso", ".xiso")):
+        return file_path
+    if os.path.isdir(file_path):
+        folder = file_path.rstrip("/\\")
+        for name in ("rommarcade.iso", "game.iso", os.path.basename(folder) + ".iso"):
+            candidate = os.path.join(folder, name)
+            if os.path.isfile(candidate):
+                return candidate
+        try:
+            for entry in sorted(os.listdir(folder)):
+                if entry.casefold().endswith((".iso", ".xiso")):
+                    return os.path.join(folder, entry)
+        except OSError:
+            pass
+    sibling = file_path.rstrip("/\\") + ".iso"
+    return sibling if os.path.isfile(sibling) else ""
+
+
 def build_command(mapping: dict[str, Any], file_path: str) -> list[str]:
     launcher = mapping.get("launcher_path") or ""
     if not launcher or not os.path.exists(launcher):
@@ -980,6 +1097,14 @@ def build_command(mapping: dict[str, Any], file_path: str) -> list[str]:
         command = [os.environ.get("COMSPEC", "cmd.exe"), "/c", launcher]
     else:
         command = [launcher]
+    if mapping.get("launcher") in ("xemu", "xemu-emu"):
+        disc = xemu_disc_path(file_path)
+        if not disc:
+            raise EmuDeckError(
+                "xemu needs an XISO disc image, but this game is installed as loose files. "
+                "Repack it with xdvdfs, or install it from an .iso."
+            )
+        return command + ["-cdrom", disc]
     if mapping.get("launcher") == "retroarch" and mapping.get("core"):
         command += ["-L", mapping["core"]]
     command.append(file_path)

@@ -67,6 +67,9 @@ export const api = {
   deleteLocalBios: (platformId, name) => request("/api/bios/local/delete", {
     method: "POST", body: { platform_id: Number(platformId), name },
   }),
+  repairBios: (platformId) => request("/api/bios/repair", {
+    method: "POST", body: { platform_id: Number(platformId) },
+  }),
   emudeck: () => request("/api/emudeck", { timeout: 60000 }),
   library: () => request("/api/library", { timeout: 60000 }),
   saveLibrary: (body) => request("/api/library", { method: "POST", body, timeout: 60000 }),

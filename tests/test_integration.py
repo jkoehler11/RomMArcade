@@ -30,6 +30,8 @@ from rommarcade.config import ConfigStore, normalize_url
 from rommarcade.deeplink import DeepLinkQueue, parse_deeplink
 from rommarcade.emudeck import (
     ALIASES,
+    EmuDeckError,
+    build_command,
     choose_core,
     choose_launcher,
     create_library,
@@ -41,6 +43,8 @@ from rommarcade.emudeck import (
     platform_choices,
     is_multi_file,
     missing_emulator_bios,
+    bios_status,
+    repair_emulator_bios,
     rom_target_name,
     platform_mapping,
     resolve_roots,
@@ -606,10 +610,54 @@ class UnitTests(unittest.TestCase):
             self.assertEqual(mapping["launcher"], "xemu-emu")
             self.assertEqual(mapping["bios_required"], ["mcpx_1.0.bin", "Complex_4627v1.03.bin"])
             self.assertEqual(mapping["bios_missing"], ["mcpx_1.0.bin", "Complex_4627v1.03.bin"])
-            open(os.path.join(bios, "MCPX_1.0.BIN"), "w").close()
-            open(os.path.join(bios, "Complex_4627v1.03.bin"), "w").close()
+            with open(os.path.join(bios, "MCPX_1.0.BIN"), "wb") as handle:
+                handle.write(b"\0" * 512)
+            with open(os.path.join(bios, "Complex_4627v1.03.bin"), "wb") as handle:
+                handle.write(b"\0" * (1024 * 1024))
             self.assertEqual(missing_emulator_bios("xemu-emu", bios), [], "names match case-insensitively")
             self.assertEqual(missing_emulator_bios("retroarch", bios), [])
+
+    def test_xemu_launches_an_iso_with_cdrom(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            launcher = os.path.join(tmp, "xemu-emu.sh")
+            with open(launcher, "w") as handle:
+                handle.write("")
+            os.chmod(launcher, 0o755)
+            game = os.path.join(tmp, "Jet Set Radio Future")
+            os.makedirs(game)
+            iso = os.path.join(game, "rommarcade.iso")
+            with open(iso, "w") as handle:
+                handle.write("")
+            command = build_command(
+                {"launcher": "xemu-emu", "launcher_path": launcher, "name": "Xbox"}, game
+            )
+            self.assertEqual(command[-2:], ["-cdrom", iso])
+            bare = os.path.join(tmp, "loose")
+            os.makedirs(bare)
+            with self.assertRaises(EmuDeckError):
+                build_command(
+                    {"launcher": "xemu-emu", "launcher_path": launcher, "name": "Xbox"}, bare
+                )
+
+    def test_bios_status_finds_misplaced_and_repairs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bios = os.path.join(tmp, "bios")
+            platform = os.path.join(bios, "xbox")
+            os.makedirs(platform)
+            with open(os.path.join(platform, "Complex_4627.bin"), "wb") as handle:
+                handle.write(b"\0" * (1024 * 1024))
+            with open(os.path.join(platform, "mcpx_1.0.bin"), "wb") as handle:
+                handle.write(b"\0" * 100)
+            status = {entry["name"]: entry for entry in bios_status("xemu-emu", bios, "xbox")}
+            self.assertEqual(status["Complex_4627v1.03.bin"]["status"], "misplaced")
+            self.assertTrue(status["Complex_4627v1.03.bin"]["can_repair"])
+            self.assertEqual(status["mcpx_1.0.bin"]["status"], "invalid")
+            self.assertEqual(status["mcpx_1.0.bin"]["actual_size"], 100)
+            result = repair_emulator_bios("xemu-emu", bios, "xbox")
+            self.assertEqual([item["name"] for item in result["copied"]], ["Complex_4627v1.03.bin"])
+            self.assertTrue(os.path.isfile(os.path.join(bios, "Complex_4627v1.03.bin")))
+            self.assertEqual(result["failed"][0]["name"], "mcpx_1.0.bin")
+            self.assertIn("expected", result["failed"][0]["reason"])
 
     def test_storage_base_follows_emudeck_settings(self):
         with tempfile.TemporaryDirectory() as tmp:
