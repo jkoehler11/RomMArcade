@@ -1296,11 +1296,12 @@ async function playRom(romId) {
 
 function biosManagerBody(platform) {
   const platformId = Number(platform.id);
-  const local = platform.local || {};
-  const statuses = local.bios_status || (local.bios_required || []).map((name) => ({
+  let local = platform.local || {};
+  let statuses = local.bios_status || (local.bios_required || []).map((name) => ({
     name,
     status: (local.bios_missing || []).includes(name) ? "missing" : "present",
   }));
+  let biosFolder = local.bios_folder || "";
   const statusLabel = {
     present: "Present", invalid: "Wrong size", alias: "Wrong name",
     misplaced: "Wrong folder", missing: "Missing",
@@ -1446,10 +1447,22 @@ function biosManagerBody(platform) {
   const reload = async () => {
     rommList.replaceChildren(h("p", { class: "note" }, "Reading RomM…"));
     localList.replaceChildren(h("p", { class: "note" }, "Reading the BIOS folder…"));
-    const [romm, localData] = await Promise.all([
+    const [romm, localData, platforms] = await Promise.all([
       api.firmware(platformId).then((data) => data.firmware || []).catch((error) => error),
       api.localBios(platformId).catch((error) => error),
+      getPlatforms(true).catch(() => null),
     ]);
+    if (platforms) {
+      const fresh = platforms.find((item) => item.id === platformId);
+      if (fresh) {
+        local = fresh.local || {};
+        statuses = local.bios_status || (local.bios_required || []).map((name) => ({
+          name, status: (local.bios_missing || []).includes(name) ? "missing" : "present",
+        }));
+        biosFolder = local.bios_folder || "";
+        drawRequired();
+      }
+    }
     if (!Array.isArray(romm)) {
       rommFiles = [];
       rommTitle.textContent = "In RomM";
@@ -1471,6 +1484,10 @@ function biosManagerBody(platform) {
     } else {
       localFiles = localData.files;
       localFolder = localData.folder || "";
+      if (Array.isArray(localData.bios_status)) statuses = localData.bios_status;
+      biosFolder = localData.bios_folder || biosFolder;
+      drawRequired();
+      drawMissing();
       drawLocal();
     }
   };
@@ -1523,22 +1540,27 @@ function biosManagerBody(platform) {
     finally { upload.disabled = !(input.files?.length); }
   });
 
-  const repair = async (button) => {
-    button.disabled = true;
-    try {
-      const result = await api.repairBios(platformId);
-      const copied = result.copied?.length || 0;
-      const failed = result.failed || [];
-      if (copied) toast(`${copied} BIOS file${copied === 1 ? "" : "s"} put in place`, "good");
-      for (const item of failed) toast(`${item.name}: ${item.reason}`, "bad");
-      if (!copied && !failed.length) toast("Nothing to fix", "info");
-      route();
-      await reload();
-    } catch (error) { toast(error.message, "bad"); button.disabled = false; }
-  };
-  const canRepair = statuses.some((entry) => entry.can_repair);
-  const requiredSection = statuses.length
-    ? h("div", { style: { marginBottom: "16px" } },
+  const requiredHost = h("div");
+  const drawRequired = () => {
+    if (!statuses.length) {
+      requiredHost.replaceChildren();
+      return;
+    }
+    const repair = async (button) => {
+      button.disabled = true;
+      try {
+        const result = await api.repairBios(platformId);
+        const copied = result.copied?.length || 0;
+        const failed = result.failed || [];
+        if (copied) toast(`${copied} BIOS file${copied === 1 ? "" : "s"} put in place`, "good");
+        for (const item of failed) toast(`${item.name}: ${item.reason}`, "bad");
+        if (!copied && !failed.length) toast("Nothing to fix", "info");
+        await reload();
+      } catch (error) { toast(error.message, "bad"); button.disabled = false; }
+    };
+    const canRepair = statuses.some((entry) => entry.can_repair);
+    requiredHost.replaceChildren(
+      h("div", { style: { marginBottom: "16px" } },
         h("div", { class: "section-title" }, "Required BIOS"),
         ...statuses.map((entry) => {
           const note = entry.status === "invalid"
@@ -1565,12 +1587,13 @@ function biosManagerBody(platform) {
               onClick: (event) => repair(event.currentTarget),
             }, icon("refresh"), "Fix placement")
           : null,
-        local.bios_folder ? h("p", { class: "note" }, `Folder: ${local.bios_folder}`) : null,
-      )
-    : null;
+        biosFolder ? h("p", { class: "note" }, `Folder: ${biosFolder}`) : null,
+      ),
+    );
+  };
 
   const node = h("div", null,
-    requiredSection,
+    requiredHost,
     search,
     statuses.length ? missingTitle : null,
     statuses.length ? missingList : null,
@@ -1582,6 +1605,7 @@ function biosManagerBody(platform) {
     h("p", { class: "note" },
       "Download copies a RomM file here; delete removes it from the machine or from RomM. Upload and delete need the firmware.write scope on your RomM client token."),
   );
+  drawRequired();
   return { node, reload };
 }
 
@@ -3016,6 +3040,8 @@ async function settingsEmulators(body, token) {
     ),
     h("div", { class: "row end", style: { marginTop: "14px" } },
       h("button", { class: "btn", onClick: () => saveEmuRoot() }, icon("check"), "Save root"),
+      h("button", { class: "btn ghost", onClick: (event) => scanMigration(event.currentTarget) },
+        icon("search"), "Find misplaced files"),
     ),
   );
 
@@ -3040,6 +3066,70 @@ async function refreshEmudeck() {
   state.emudeck = null;
   try { await api.emudeck(); } catch { /* ignore */ }
   route();
+}
+
+async function scanMigration(button) {
+  if (button) button.disabled = true;
+  try {
+    const result = await api.migrateScan();
+    openMigrationModal(result);
+  } catch (error) { toast(error.message, "bad"); }
+  finally { if (button) button.disabled = false; }
+}
+
+function openMigrationModal(result) {
+  const labels = { bios: "BIOS", roms: "Games", saves: "Saves", storage: "Storage / HDD" };
+  const totals = result.totals || {};
+  const categories = Object.entries(result.categories || {}).filter(([, value]) => value.files);
+  const sources = result.sources || [];
+  const rows = categories.map(([key, value]) => h("div", { class: "setup-file" },
+    h("div", { style: { minWidth: "0" } },
+      h("div", { class: "setup-name" }, labels[key] || key),
+      h("div", { class: "note" }, `${value.files} found · ${fmtBytes(value.bytes)}`),
+      value.conflict_files
+        ? h("div", { class: "note" }, `${value.conflict_files} already exist with different contents`)
+        : null,
+    ),
+    h("span", { class: `chip ${value.move_files ? "" : "ok"}` },
+      `${value.move_files} to move`),
+  ));
+  const sourceRows = sources.map((source) => h("div", { class: "note" },
+    `From ${source.root} · ${source.totals.files} files · ${fmtBytes(source.totals.bytes)}`));
+  const moveButton = h("button", {
+    class: "btn primary",
+    disabled: !totals.move_files,
+    onClick: async () => {
+      moveButton.disabled = true;
+      try {
+        const moved = await api.migrateMove();
+        const failed = moved.failed?.length || 0;
+        toast(`Moved ${moved.moved_files} file${moved.moved_files === 1 ? "" : "s"} · ${fmtBytes(moved.moved_bytes)}${failed ? ` · ${failed} failed` : ""}`,
+          failed ? "info" : "good");
+        closeModal();
+        await refreshEmudeck();
+      } catch (error) { toast(error.message, "bad"); moveButton.disabled = false; }
+    },
+  }, icon("download"), "Move files");
+  const summary = totals.files
+    ? `Found ${totals.files} files (${fmtBytes(totals.bytes)}) in ${sources.length} other Emulation folder${sources.length === 1 ? "" : "s"} under ${result.scan_root}.`
+    : `No other Emulation folders were found under ${result.scan_root}.`;
+  openModal(h("div", { class: "sheet" },
+    h("h2", null, "Fix EmuDeck folders"),
+    h("p", null, `Active folder: ${result.active_root || "not detected"}`),
+    h("p", null, summary),
+    sourceRows.length ? h("div", { style: { margin: "10px 0" } }, ...sourceRows) : null,
+    rows.length ? h("div", { style: { margin: "12px 0" } }, ...rows) : null,
+    totals.present_files
+      ? h("p", { class: "note" }, `${totals.present_files} files are already in place and will be left alone.`)
+      : null,
+    totals.conflict_files
+      ? h("p", { class: "note" }, `${totals.conflict_files} files conflict with existing files and will be left untouched.`)
+      : null,
+    h("div", { class: "row end sheet-actions" },
+      h("button", { class: "btn ghost", onClick: closeModal }, "Cancel"),
+      moveButton,
+    ),
+  ));
 }
 
 async function saveEmuRoot() {

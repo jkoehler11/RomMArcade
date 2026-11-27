@@ -39,6 +39,8 @@ from .emudeck import (
     bios_target,
     build_command,
     download_emulator_storage,
+    migration_move,
+    migration_snapshot,
     repair_emulator_bios,
     create_library,
     detect as detect_emudeck,
@@ -108,6 +110,7 @@ class App:
         self.downloads = DownloadManager(
             self.state, self.log_file, int(cfg.get("downloads", {}).get("concurrency", 2))
         )
+        self._bios_done_seen: set[str] = set()
         self.started = _now()
         self._lock = threading.RLock()
         self._cache: dict[str, tuple[float, Any]] = {}
@@ -644,7 +647,15 @@ class App:
             path = os.path.join(root, name) if root else ""
             if path and os.path.isfile(path) and path not in seen:
                 files.append({"name": name, "path": path, "size": os.path.getsize(path)})
-        return {"platform": slug, "folder": folder or root, "files": files}
+        return {
+            "platform": slug,
+            "folder": folder or root,
+            "files": files,
+            "bios_status": [dict(entry) for entry in (mapping.get("bios_status") or [])],
+            "bios_required": list(mapping.get("bios_required") or []),
+            "bios_missing": list(mapping.get("bios_missing") or []),
+            "bios_folder": root,
+        }
 
     def delete_bios_local(self, body: dict[str, Any]) -> dict[str, Any]:
         platform_id = int(body.get("platform_id") or 0)
@@ -674,7 +685,18 @@ class App:
         if not os.path.isfile(path):
             raise HttpError(404, f"{name} is not in the BIOS folder.")
         os.unlink(path)
+        self._cache_clear()
         return self.bios_local(platform_id)
+
+    def downloads_payload(self) -> dict[str, Any]:
+        jobs = self.downloads.list()
+        for job in jobs:
+            if (job.get("kind") == "bios" and job.get("status") == "done"
+                    and job.get("id") not in self._bios_done_seen):
+                self._bios_done_seen.add(str(job.get("id")))
+                self._cache_clear()
+                break
+        return {"downloads": jobs}
 
     def _firmware_action(self, action: str, call):
         try:
@@ -935,6 +957,15 @@ class App:
             self.log("rescanned EmuDeck launchers and platforms")
             return 200, JSON, self.emudeck_snapshot()
 
+        if route == ("GET", "/api/emudeck/migrate/scan"):
+            return 200, JSON, migration_snapshot(self.config.get())
+
+        if route == ("POST", "/api/emudeck/migrate/move"):
+            result = migration_move(self.config.get())
+            self._cache_clear()
+            invalidate_emudeck()
+            return 200, JSON, result
+
         if route == ("POST", "/api/emudeck/open-installer"):
             self.require_emudeck()
             installer = _find_emudeck_installer()
@@ -987,7 +1018,7 @@ class App:
             )
 
         if route == ("GET", "/api/downloads"):
-            return 200, JSON, {"downloads": self.downloads.list()}
+            return 200, JSON, self.downloads_payload()
 
         match = re.fullmatch(r"/api/downloads/([A-Za-z0-9_-]+)/cancel", path)
         if method == "POST" and match:
@@ -1076,11 +1107,15 @@ class App:
             return 200, JSON, result
 
         if route == ("POST", "/api/firmware/upload"):
-            return 200, JSON, self.upload_firmware(body or {})
+            result = self.upload_firmware(body or {})
+            self._cache_clear()
+            return 200, JSON, result
 
         match = re.fullmatch(r"/api/firmware/(\d+)/delete", path)
         if method == "POST" and match:
-            return 200, JSON, self.delete_firmware(int(match.group(1)))
+            result = self.delete_firmware(int(match.group(1)))
+            self._cache_clear()
+            return 200, JSON, result
 
         match = re.fullmatch(r"/api/firmware/(\d+)", path)
         if method == "GET" and match:

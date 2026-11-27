@@ -46,6 +46,8 @@ from rommarcade.emudeck import (
     bios_status,
     repair_emulator_bios,
     storage_status,
+    migration_move,
+    migration_snapshot,
     rom_target_name,
     platform_mapping,
     resolve_roots,
@@ -617,6 +619,31 @@ class UnitTests(unittest.TestCase):
                 handle.write(b"\0" * (1024 * 1024))
             self.assertEqual(missing_emulator_bios("xemu-emu", bios), [], "names match case-insensitively")
             self.assertEqual(missing_emulator_bios("retroarch", bios), [])
+
+    def test_migration_moves_missing_files_into_the_active_tree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            outer = os.path.join(tmp, "Emulation")
+            active = os.path.join(outer, "Emulation")
+            os.makedirs(os.path.join(outer, "bios"))
+            os.makedirs(os.path.join(outer, "roms", "nes"))
+            os.makedirs(os.path.join(active, "bios"))
+            os.makedirs(os.path.join(active, "roms"))
+            with open(os.path.join(outer, "bios", "bios.bin"), "wb") as handle:
+                handle.write(b"bios")
+            with open(os.path.join(outer, "roms", "nes", "game.nes"), "wb") as handle:
+                handle.write(b"game")
+            roots = {
+                "root": active, "bios_root": os.path.join(active, "bios"),
+                "roms_root": os.path.join(active, "roms"),
+            }
+            with patch("rommarcade.emudeck.resolve_roots", return_value=roots):
+                plan = migration_snapshot({"emudeck": {"root": tmp}})
+                self.assertEqual(plan["totals"]["move_files"], 2)
+                result = migration_move({"emudeck": {"root": tmp}})
+            self.assertEqual(result["moved_files"], 2)
+            self.assertTrue(os.path.isfile(os.path.join(active, "bios", "bios.bin")))
+            self.assertTrue(os.path.isfile(os.path.join(active, "roms", "nes", "game.nes")))
+            self.assertFalse(os.path.exists(os.path.join(outer, "bios", "bios.bin")))
 
     def test_dreamcast_bios_requirements_are_platform_level(self):
         with tempfile.TemporaryDirectory() as tmp:

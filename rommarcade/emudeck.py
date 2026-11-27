@@ -544,6 +544,14 @@ def resolve_roots(config: dict[str, Any] | None = None) -> dict[str, Any]:
     elif settings_storage:
         candidates.append(os.path.join(settings_storage, "Emulation"))
         candidates.append(settings_storage)
+    # settings.json's romsPath names the real tree even when storagePath is a
+    # storage folder or a parent that would make an extra Emulation level.
+    for key in ("romsPath", "biosPath"):
+        value = str(settings.get(key) or "").strip()
+        if value:
+            parent = os.path.dirname(os.path.abspath(os.path.expanduser(value)))
+            if parent:
+                candidates.append(parent)
     home = os.path.expanduser("~")
     candidates.extend(
         [
@@ -605,6 +613,196 @@ def resolve_roots(config: dict[str, Any] | None = None) -> dict[str, Any]:
         "settings": settings,
         "library": library,
     }
+
+
+MIGRATION_CATEGORIES = ("bios", "roms", "saves", "storage")
+
+
+def _looks_like_emulation_tree(path: str) -> bool:
+    return (os.path.isdir(os.path.join(path, "bios"))
+            or os.path.isdir(os.path.join(path, "roms")))
+
+
+def _migration_scan_root(config: dict[str, Any], active_root: str) -> str:
+    """Scan the folder that contains the active tree, never the whole home.
+
+    The root override can be a grandparent (``/home/james``), and descending
+    from there would find mounted NAS libraries and unrelated dumps.  An extra
+    EmuDeck tree lives beside the active one, so its parent is enough.
+    """
+    return os.path.dirname(os.path.abspath(active_root)) or active_root
+
+
+def _migration_candidates(scan_root: str, active_root: str) -> list[str]:
+    active = os.path.realpath(active_root)
+    found: set[str] = set()
+
+    def consider(path: str) -> None:
+        real = os.path.realpath(path)
+        if real != active and _looks_like_emulation_tree(path):
+            found.add(real)
+
+    consider(scan_root)
+    try:
+        entries = list(os.scandir(scan_root))
+    except OSError:
+        entries = []
+    for entry in entries:
+        if entry.is_dir(follow_symlinks=False) and not entry.name.startswith("."):
+            consider(entry.path)
+    return sorted(found)
+
+
+def _migration_plan(config: dict[str, Any] | None = None) -> dict[str, Any]:
+    roots = resolve_roots(config)
+    active = roots.get("root") or ""
+    if not active:
+        return {"active_root": "", "scan_root": "", "sources": [], "categories": {}, "totals": {}, "moves": []}
+    active = os.path.abspath(active)
+    scan_root = _migration_scan_root(config or {}, active)
+    destinations = {
+        "bios": roots.get("bios_root") or os.path.join(active, "bios"),
+        "roms": roots.get("roms_root") or os.path.join(active, "roms"),
+        "saves": os.path.join(active, "saves"),
+        "storage": os.path.join(active, "storage"),
+    }
+    sources = _migration_candidates(scan_root, active)
+    plan: dict[str, Any] = {
+        "active_root": active,
+        "scan_root": scan_root,
+        "sources": [],
+        "categories": {category: {
+            "files": 0, "bytes": 0, "move_files": 0, "move_bytes": 0,
+            "present_files": 0, "conflict_files": 0,
+        } for category in MIGRATION_CATEGORIES},
+        "totals": {"files": 0, "bytes": 0, "move_files": 0, "move_bytes": 0,
+                   "present_files": 0, "conflict_files": 0},
+        "moves": [],
+        "samples": {"move": [], "conflict": []},
+    }
+    for source in sources:
+        source_entry = {"root": source, "categories": {}, "totals": {
+            "files": 0, "bytes": 0, "move_files": 0, "move_bytes": 0,
+            "present_files": 0, "conflict_files": 0,
+        }}
+        for category in MIGRATION_CATEGORIES:
+            source_folder = os.path.join(source, category)
+            destination_folder = destinations[category]
+            counts = source_entry["categories"].setdefault(category, {
+                "files": 0, "bytes": 0, "move_files": 0, "move_bytes": 0,
+                "present_files": 0, "conflict_files": 0,
+            })
+            if not os.path.isdir(source_folder):
+                continue
+            for dirpath, dirnames, filenames in os.walk(source_folder):
+                dirnames[:] = [name for name in dirnames if not name.startswith(".")]
+                for filename in filenames:
+                    source_path = os.path.join(dirpath, filename)
+                    if os.path.islink(source_path):
+                        continue
+                    try:
+                        size = os.path.getsize(source_path)
+                    except OSError:
+                        continue
+                    relative = os.path.relpath(source_path, source_folder)
+                    destination_path = os.path.join(destination_folder, relative)
+                    action = "move"
+                    if os.path.lexists(destination_path):
+                        try:
+                            same = (os.path.isfile(destination_path)
+                                    and os.path.getsize(destination_path) == size)
+                        except OSError:
+                            same = False
+                        action = "present" if same else "conflict"
+                    counts["files"] += 1
+                    counts["bytes"] += size
+                    plan["totals"]["files"] += 1
+                    plan["totals"]["bytes"] += size
+                    source_entry["totals"]["files"] += 1
+                    source_entry["totals"]["bytes"] += size
+                    if action == "move":
+                        counts["move_files"] += 1
+                        counts["move_bytes"] += size
+                        plan["totals"]["move_files"] += 1
+                        plan["totals"]["move_bytes"] += size
+                        source_entry["totals"]["move_files"] += 1
+                        source_entry["totals"]["move_bytes"] += size
+                        plan["moves"].append({
+                            "category": category, "source": source_path,
+                            "destination": destination_path, "size": size,
+                        })
+                        if len(plan["samples"]["move"]) < 8:
+                            plan["samples"]["move"].append({
+                                "category": category, "name": relative, "size": size,
+                                "source": source, "destination": destination_folder,
+                            })
+                    elif action == "present":
+                        counts["present_files"] += 1
+                        plan["totals"]["present_files"] += 1
+                        source_entry["totals"]["present_files"] += 1
+                    else:
+                        counts["conflict_files"] += 1
+                        plan["totals"]["conflict_files"] += 1
+                        source_entry["totals"]["conflict_files"] += 1
+                        if len(plan["samples"]["conflict"]) < 8:
+                            plan["samples"]["conflict"].append({
+                                "category": category, "name": relative, "size": size,
+                            })
+            for key in ("files", "bytes", "move_files", "move_bytes", "present_files", "conflict_files"):
+                plan["categories"][category][key] += counts[key]
+        if source_entry["totals"]["files"]:
+            plan["sources"].append(source_entry)
+    return plan
+
+
+def migration_snapshot(config: dict[str, Any] | None = None) -> dict[str, Any]:
+    plan = _migration_plan(config)
+    return {key: value for key, value in plan.items() if key != "moves"}
+
+
+def migration_move(config: dict[str, Any] | None = None) -> dict[str, Any]:
+    plan = _migration_plan(config)
+    active = plan.get("active_root") or ""
+    result: dict[str, Any] = {
+        "active_root": active, "moved_files": 0, "moved_bytes": 0,
+        "present_files": plan.get("totals", {}).get("present_files", 0),
+        "conflict_files": plan.get("totals", {}).get("conflict_files", 0),
+        "failed": [], "removed_dirs": 0,
+    }
+    if not active:
+        return result
+    active_real = os.path.realpath(active)
+    for item in plan.get("moves", []):
+        source = item["source"]
+        destination = item["destination"]
+        try:
+            parent_real = os.path.realpath(os.path.dirname(destination))
+            if not (parent_real == active_real or parent_real.startswith(active_real + os.sep)):
+                result["failed"].append({"name": os.path.basename(source), "reason": "outside the active tree"})
+                continue
+            os.makedirs(os.path.dirname(destination), exist_ok=True)
+            if os.path.lexists(destination):
+                result["conflict_files"] += 1
+                continue
+            shutil.move(source, destination)
+            result["moved_files"] += 1
+            result["moved_bytes"] += int(item.get("size") or 0)
+        except OSError as exc:
+            result["failed"].append({"name": os.path.basename(source), "reason": str(exc)})
+    # Remove only directories that became empty; never touch a file.
+    for source in plan.get("sources", []):
+        for category in MIGRATION_CATEGORIES:
+            folder = os.path.join(source["root"], category)
+            if not os.path.isdir(folder):
+                continue
+            for dirpath, dirnames, filenames in os.walk(folder, topdown=False):
+                try:
+                    if not os.listdir(dirpath):
+                        os.rmdir(dirpath)
+                        result["removed_dirs"] += 1
+                except OSError:
+                    pass
+    return result
 
 
 def _library_root_value(raw: str) -> str:

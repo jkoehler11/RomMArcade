@@ -75,6 +75,7 @@ async function request(path, { method = "GET", body = null, timeout = 30000 } = 
   try {
     const response = await fetch(path, {
       method,
+      cache: "no-store",
       headers: body ? { "Content-Type": "application/json" } : {},
       body: body ? JSON.stringify(body) : undefined,
       signal: controller.signal,
@@ -135,6 +136,10 @@ export const api = {
     method: "POST", body: { platform_id: Number(platformId), kind },
   }),
   emudeck: () => request("/api/emudeck", { timeout: 60000 }),
+  migrateScan: () => request("/api/emudeck/migrate/scan", { timeout: 120000 }),
+  migrateMove: () => request("/api/emudeck/migrate/move", {
+    method: "POST", body: {}, timeout: 300000,
+  }),
   library: () => request("/api/library", { timeout: 60000 }),
   saveLibrary: (body) => request("/api/library", { method: "POST", body, timeout: 60000 }),
   openInstaller: () => request("/api/emudeck/open-installer", { method: "POST", body: {} }),
