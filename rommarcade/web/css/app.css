@@ -403,6 +403,7 @@ a { color: inherit; text-decoration: none; }
 .play-save { display: flex; align-items: center; gap: 7px; margin: -8px 0 12px; color: var(--muted); font-size: 12.5px; line-height: 1.4; }
 .play-save + .play-via { margin-top: 0; }
 .play-save .icon { width: 14px; height: 14px; flex: 0 0 auto; opacity: .8; }
+.play-save .chip { height: 19px; margin-left: 2px; padding: 0 7px; font-size: 8.5px; }
 .game-messages { display: grid; gap: 10px; margin-top: 18px; }
 .game-messages .bios-banner { margin-bottom: 0; }
 .game-tabs { display: flex; flex-wrap: wrap; gap: 2px; margin: 26px 0 18px; border-bottom: 1px solid var(--line); }

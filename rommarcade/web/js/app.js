@@ -476,8 +476,9 @@ function playSaveNote(saves, installed) {
   const localMain = localRows.find((row) => row.main) || localRows.find((row) => (row.slot || null) === slot);
   if (!current && !localMain) return { text: `Save · no “${slot}” save yet — the game starts fresh` };
   const pick = current || localMain;
+  const synced = Boolean(current && localMain && current.matches_local);
   const where = current && localMain
-    ? (current.matches_local ? "here and in RomM" : "here and in RomM, synced on play")
+    ? (synced ? "here and in RomM" : "here and in RomM, synced on play")
     : current ? "in RomM" : "on this machine";
   const stamp = pick.updated_at || pick.mtime || "";
   let when = "";
@@ -490,6 +491,7 @@ function playSaveNote(saves, installed) {
   return {
     text: `Save · ${slot} · ${fmtBytes(Number(pick.size) || 0)}${when} · ${where}`,
     title: pick.file_name || pick.name || "",
+    synced,
   };
 }
 
@@ -569,10 +571,14 @@ async function renderGame(id, token, tab = "") {
     fact("Files", String((rom.files || []).length)),
   );
 
+  const saveNoteChildren = (note) => [
+    icon("clock"),
+    h("span", null, note.text),
+    note.synced ? h("span", { class: "chip ok" }, icon("check"), "Synced") : null,
+  ];
   let saveNote = playSaveNote(saves, installed);
   let saveNoteEl = saveNote
-    ? h("div", { class: "play-save", title: saveNote.title || "" },
-        icon("clock"), h("span", null, saveNote.text))
+    ? h("div", { class: "play-save", title: saveNote.title || "" }, ...saveNoteChildren(saveNote))
     : null;
   const updateSaveNote = (nextSaves) => {
     saveNote = playSaveNote(nextSaves, installed);
@@ -583,7 +589,7 @@ async function renderGame(id, token, tab = "") {
       return;
     }
     saveNoteEl.title = saveNote.title || "";
-    saveNoteEl.replaceChildren(icon("clock"), h("span", null, saveNote.text));
+    saveNoteEl.replaceChildren(...saveNoteChildren(saveNote));
   };
   const versions = rom.versions || [];
 
@@ -893,7 +899,9 @@ function savesSection(rom, initial, onSavesChanged = () => {}) {
     const chips = h("span", { class: "chips" },
       h("span", { class: "chip" }, save.slot || "archive"),
       save.current ? h("span", { class: "chip ok" }, "current") : null,
-      save.matches_local ? h("span", { class: "chip" }, "here") : null,
+      save.current && save.matches_local && (save.slot || null) === (data.slot || null)
+        ? h("span", { class: "chip ok" }, icon("check"), "Synced")
+        : save.matches_local ? h("span", { class: "chip" }, "here") : null,
       save.public ? h("span", { class: "chip" }, "public") : null,
       ...(save.labels || []).map((label) => h("span", { class: "chip" }, label)),
     );
@@ -995,7 +1003,7 @@ function savesSection(rom, initial, onSavesChanged = () => {}) {
         ? h("span", { class: "chip" }, "Sync off")
         : data.sync?.enabled === false
           ? h("span", { class: "chip" }, "Sync off")
-          : h("span", { class: "chip ok" }, icon("check"), "Sync on"),
+          : h("span", { class: "chip ok" }, icon("check"), data.synced ? "Synced" : "Sync on"),
     );
     if (data.supported === false) {
       mount(wrap, header,

@@ -696,11 +696,15 @@ class SaveSyncService:
             key = row.get("slot")
             if key and key not in newest:
                 newest[key] = row.get("id")
+        synced = False
         for row in rows:
             item = _save_public(row)
             item["current"] = bool(row.get("slot")) and newest.get(row.get("slot")) == row.get("id")
             item["matches_local"] = bool(main and main.hash and row.get("content_hash") == main.hash)
+            if item["current"] and (row.get("slot") or None) == (slot or None) and item["matches_local"]:
+                synced = True
             out["server"].append(item)
+        out["synced"] = synced
         slots: dict[str, dict[str, Any]] = {}
         for row in rows:
             key = str(row.get("slot") or "")

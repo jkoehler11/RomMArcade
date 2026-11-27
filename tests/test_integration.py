@@ -1245,6 +1245,7 @@ class SaveManagementTests(unittest.TestCase):
                             for query in FakeRomM.upload_queries))
         _, panel = self.call("/api/roms/180/saves")
         self.assertEqual(panel["playing"], "1942 (Japan, USA).srm")
+        self.assertTrue(panel["synced"])
         self.assertTrue(any(item["matches_local"] for item in panel["server"]))
 
     def test_03_conflict_stops_the_launch(self):
