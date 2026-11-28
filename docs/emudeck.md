@@ -68,7 +68,8 @@ auto-detection, so the choice is always explicit.
 
 ## What RomMArcade does not do
 
-- It does not sync save states (`states/`); only battery saves are handled.
+- It does not auto-sync save states (`states/`); the **States** tab copies and uploads them
+  manually. Battery saves are the ones synced around a launch.
 - It does not create Steam shortcuts.
 - It does not patch or convert ROMs.
 - It does not do multi-disc conversion.

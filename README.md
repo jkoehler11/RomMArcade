@@ -111,7 +111,9 @@ copy on this machine and the current save on RomM are the same.
 
 Save sync supports flat-file emulators today (RetroArch systems and standalone melonDS). Structured
 emulators such as Dolphin, Ryujinx and Azahar use title-ID save trees and show **Sync off** instead
-of writing to the wrong folder. [Read the details](docs/saves.md).
+of writing to the wrong folder. The **States** tab is separate: it lists save states on RomM and on
+this machine, and lets you use or upload them in the emulator's state folder. States stay
+manual because they are tied to a particular emulator/core version. [Read the details](docs/saves.md).
 
 ## Documentation
 

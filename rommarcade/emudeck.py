@@ -1463,19 +1463,19 @@ def save_roots(emulation_root: str, platform_dir: str, launcher: str = "") -> li
     if launcher == "retroarch":
         return [
             os.path.join(emulation_root, "saves", "retroarch", "saves"),
-            os.path.join(emulation_root, "states", "retroarch", "states"),
+            os.path.join(emulation_root, "saves", "retroarch", "states"),
         ]
     if launcher == "melonds":
         return [
             os.path.join(emulation_root, "saves", "melonds", "saves"),
-            os.path.join(emulation_root, "states", "melonds", "states"),
+            os.path.join(emulation_root, "saves", "melonds", "states"),
         ]
     directory = sanitize_name(platform_dir or "")
     if not directory:
         return []
     return [
         os.path.join(emulation_root, "saves", directory),
-        os.path.join(emulation_root, "states", directory),
+        os.path.join(emulation_root, "saves", directory, "states"),
     ]
 
 

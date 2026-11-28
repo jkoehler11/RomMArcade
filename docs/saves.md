@@ -28,6 +28,22 @@ The game page's **Saves** tab lists every version on RomM and every file on this
 - **Sync slot** picks the slot this game pairs on; **New slot** creates a named slot for the game
   (optionally seeded with the save on this machine) so checkpoints can live side by side.
 
+## Save states
+
+Save states are emulator snapshots, not the battery save a game writes for itself. The game page's
+**States** tab lists:
+
+- state files in the mapped emulator's EmuDeck state folder that belong to this game;
+- states RomM holds for the game, with the emulator and core that wrote them.
+
+**Use** copies one RomM state into the emulator's state folder under the game's plain state name and
+backs up the previous file first. **Upload** sends a local state to RomM. Nothing is pulled automatically before a launch: a state can be tied to a particular
+emulator, core and version, so silently replacing it during launch would be unsafe. Load a
+copied state from the emulator's own state menu.
+
+For RetroArch the folder is `saves/retroarch/states`; melonDS uses `saves/melonds/states`. Other
+launchers fall back to `saves/<platform>/states`, and the States tab shows the exact path it used.
+
 ## Emulator coverage
 
 Save sync currently supports emulators that keep one flat save file per game:
@@ -38,7 +54,8 @@ Save sync currently supports emulators that keep one flat save file per game:
 
 Structured emulators — Dolphin, Ryujinx, Azahar, Cemu, Xenia, Flycast, PPSSPP, RPCS3 and similar —
 store saves in title-ID trees, not `<rom>.<ext>` files. RomMArcade marks save sync as unavailable
-for those rather than writing into a folder the emulator ignores. Save-state sync is not covered.
+for those rather than writing into a folder the emulator ignores. Save states are handled separately
+in the **States** tab as manual copies/uploads; they are not auto-synced.
 
 ## Settings
 

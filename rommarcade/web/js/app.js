@@ -530,9 +530,10 @@ function playSaveNote(saves, installed) {
 
 async function renderGame(id, token, tab = "") {
   viewEl.replaceChildren(h("div", { class: "skel card", style: { height: "360px" } }));
-  const [detail, installs, platforms, saves] = await Promise.all([
+  const [detail, installs, platforms, saves, states] = await Promise.all([
     api.rom(id), getInstalls(), getPlatforms(),
     api.romSaves(id).catch(() => null),
+    api.romStates(id).catch((error) => ({ error: error.message, server: [], local: [] })),
   ]);
   if (token !== state.renderToken) return;
   const rom = detail.rom;
@@ -634,6 +635,8 @@ async function renderGame(id, token, tab = "") {
     facts,
   );
   const savePanel = savesSection(rom, saves, updateSaveNote);
+  const statePanel = statesSection(rom, states);
+  const stateCount = (states?.server?.length || 0) + (states?.local?.length || 0);
   const filePanel = (rom.files || []).length
     ? fileListSection(rom.files)
     : h("p", { class: "note" }, "RomM did not list individual files for this game.");
@@ -641,6 +644,7 @@ async function renderGame(id, token, tab = "") {
   const tabDefs = [
     { id: "overview", label: "Overview", node: overviewPanel },
     { id: "saves", label: "Saves", node: savePanel },
+    { id: "states", label: stateCount ? `States · ${stateCount}` : "States", node: statePanel },
     { id: "files", label: `Files · ${(rom.files || []).length}`, node: filePanel },
     ...(biosPanel ? [{ id: "bios", label: "BIOS", node: biosPanel.node }] : []),
   ];
@@ -1109,6 +1113,144 @@ function savesSection(rom, initial, onSavesChanged = () => {}) {
       rows.length > SAVE_PREVIEW
         ? h("button", { class: "btn small ghost file-more", onClick: () => { expanded = !expanded; draw(); } },
             expanded ? `Show first ${SAVE_PREVIEW}` : `Show all ${rows.length} saves`)
+        : null,
+    );
+  }
+
+  draw();
+  return wrap;
+}
+
+function statesSection(rom, initial) {
+  const wrap = h("div", { class: "saves-section states-section", "data-states": String(rom.id) });
+  let data = initial || { server: [], local: [] };
+  let expanded = false;
+
+  const refresh = async () => {
+    try {
+      data = await api.romStates(rom.id);
+      draw();
+    } catch (error) {
+      toast(error.message, "bad");
+    }
+  };
+  wrap.__refresh = refresh;
+
+  const act = async (button, run, message) => {
+    if (button) {
+      button.disabled = true;
+      button.classList.add("busy");
+    }
+    try {
+      const result = await run();
+      if (message) toast(message, "good");
+      await refresh();
+      return result;
+    } catch (error) {
+      toast(error.message, "bad");
+      return null;
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.classList.remove("busy");
+      }
+    }
+  };
+
+  function localRow(state) {
+    return h("div", { class: "save-row local" },
+      h("div", { class: "save-main" },
+        h("div", { class: "save-title" },
+          h("span", { class: "n mono", title: state.path || state.name }, state.name),
+          h("span", { class: "chips" }, h("span", { class: "chip" }, "local")),
+        ),
+        h("div", { class: "save-meta" },
+          h("span", null, fmtBytes(state.size)),
+          h("span", { title: state.mtime || "" }, state.mtime ? timeAgo(state.mtime) : ""),
+        ),
+      ),
+      h("span", { class: "acts" },
+        h("button", {
+          class: "btn small",
+          title: "Upload this save state to RomM",
+          onClick: (event) => act(event.currentTarget,
+            () => api.uploadLocalState(rom.id, state.name),
+            `Uploaded ${state.name}`),
+        }, icon("upload"), "Upload"),
+      ),
+    );
+  }
+
+  function serverRow(state) {
+    const chips = h("span", { class: "chips" },
+      state.emulator ? h("span", { class: "chip" }, state.emulator) : null,
+      state.core ? h("span", { class: "chip" }, state.core) : null,
+      state.here ? h("span", { class: "chip ok" }, icon("check"), "here") : null,
+      ...(state.labels || []).map((label) => h("span", { class: "chip" }, label)),
+    );
+    return h("div", { class: "save-row" },
+      h("div", { class: "save-main" },
+        h("div", { class: "save-title" },
+          h("span", { class: "n mono", title: state.file_name }, state.file_name || "state"),
+          chips,
+        ),
+        h("div", { class: "save-meta" },
+          h("span", null, state.emulator || "unknown emulator"),
+          h("span", null, fmtBytes(state.size)),
+          h("span", { title: state.updated_at || "" }, state.updated_at ? timeAgo(state.updated_at) : ""),
+        ),
+      ),
+      h("span", { class: "acts" },
+        h("button", {
+          class: "btn small primary",
+          title: `Use this state here; the current state is backed up first`,
+          onClick: (event) => act(event.currentTarget,
+            () => api.useState(rom.id, state.id),
+            `This machine now uses ${state.file_name || "the save state"}`),
+        }, icon("download"), "Use"),
+      ),
+    );
+  }
+
+  function draw() {
+    if (!data) {
+      mount(wrap,
+        h("div", { class: "section-title" }, "Save states"),
+        h("p", { class: "note" }, "Save states could not be loaded from RomM."));
+      return;
+    }
+    const local = data.local || [];
+    const rows = data.server || [];
+    const shown = expanded ? rows : rows.slice(0, SAVE_PREVIEW);
+    const localBlock = local.length
+      ? h("div", { class: "save-list" }, local.map(localRow))
+      : h("p", { class: "note" }, "No save state for this game on this machine yet.");
+    let serverBlock;
+    if (data.error) {
+      serverBlock = h("p", { class: "note" }, `Could not read save states from RomM: ${data.error}`);
+    } else if (!rows.length) {
+      serverBlock = h("p", { class: "note" }, "No save states for this game on RomM yet. Upload one from this machine, or save one in the emulator and refresh.");
+    } else {
+      serverBlock = h("div", { class: "save-list" }, shown.map(serverRow));
+    }
+    const header = h("div", { class: "saves-head" },
+      h("div", { class: "section-title" }, "Save states"),
+      h("span", { class: "chip" }, "manual"),
+    );
+    mount(wrap,
+      header,
+      h("p", { class: "note" },
+        data.root
+          ? `Save states are emulator snapshots, so they are not synced automatically. Use copies one into ${data.root} under this game's state name; the previous state is backed up. Load it from ${data.launcher_name || "the emulator"}'s state menu.`
+          : "Save states are emulator snapshots, so they are not synced automatically."),
+      data.supported === false ? h("p", { class: "note" }, data.reason || "No save-state folder is known for this platform.") : null,
+      h("div", { class: "section-title small" }, "On this machine"),
+      localBlock,
+      h("div", { class: "section-title small" }, "On RomM"),
+      serverBlock,
+      rows.length > SAVE_PREVIEW
+        ? h("button", { class: "btn small ghost file-more", onClick: () => { expanded = !expanded; draw(); } },
+            expanded ? `Show first ${SAVE_PREVIEW}` : `Show all ${rows.length} save states`)
         : null,
     );
   }

@@ -324,6 +324,65 @@ class RomMClient:
             data = data.get("items") or data.get("saves") or []
         return data if isinstance(data, list) else []
 
+    # -- save states ------------------------------------------------------
+    def states(self, rom_id: int | None = None, **params: Any) -> list[dict[str, Any]]:
+        """Every save state RomM holds for a ROM (or the whole account)."""
+        query: dict[str, Any] = dict(params)
+        if rom_id is not None:
+            query["rom_id"] = int(rom_id)
+        data = self.json("GET", "/api/states", query or None)
+        if isinstance(data, dict):
+            data = data.get("items") or data.get("states") or []
+        return data if isinstance(data, list) else []
+
+    def state(self, state_id: int) -> dict[str, Any]:
+        return self.json("GET", f"/api/states/{int(state_id)}") or {}
+
+    def open_state_content(self, state_id: int):
+        """Open a save state's bytes; the caller owns the response."""
+        return self.open(f"/api/states/{int(state_id)}/content", timeout=180)
+
+    def upload_state(
+        self,
+        rom_id: int,
+        data: bytes,
+        *,
+        file_name: str,
+        emulator: str | None = None,
+        core: str | None = None,
+    ) -> dict[str, Any]:
+        """POST one save state as multipart/form-data (stdlib only)."""
+        boundary = "----rommarcade" + uuid.uuid4().hex
+        ascii_name = file_name.encode("ascii", "replace").decode("ascii").replace('"', "_")
+        quoted = urllib.parse.quote(file_name)
+        head = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="stateFile"; filename="{ascii_name}"; '
+            f"filename*=UTF-8''{quoted}\r\n"
+            "Content-Type: application/octet-stream\r\n\r\n"
+        ).encode("ascii")
+        body = head + data + f"\r\n--{boundary}--\r\n".encode("ascii")
+        params = {
+            "rom_id": int(rom_id),
+            "emulator": emulator or None,
+            "core": core or None,
+        }
+        with self._open(
+            "POST",
+            "/api/states",
+            params,
+            data=body,
+            content_type=f"multipart/form-data; boundary={boundary}",
+            timeout=180,
+        ) as response:
+            raw = response.read()
+        if not raw:
+            return {}
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise RomMError("The server answered a save-state upload with something that was not JSON.") from None
+
     def save(self, save_id: int) -> dict[str, Any]:
         return self.json("GET", f"/api/saves/{int(save_id)}") or {}
 

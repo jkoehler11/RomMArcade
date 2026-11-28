@@ -61,6 +61,7 @@ from .emudeck import (
 )
 from .romm import RomMClient, RomMError
 from .saves import SaveSyncError, SaveSyncService
+from .states import StateError, download_state, list_states, upload_state
 from .state import StateStore, ensure_dirs
 
 WEB_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
@@ -904,6 +905,23 @@ class App:
         if method == "GET" and match:
             return 200, JSON, self.rom_saves(int(match.group(1)))
 
+        match = re.fullmatch(r"/api/roms/(\d+)/states", path)
+        if method == "GET" and match:
+            return 200, JSON, self.rom_states(int(match.group(1)))
+
+        match = re.fullmatch(r"/api/roms/(\d+)/states/(\d+)/download", path)
+        if method == "POST" and match:
+            return 200, JSON, self.download_rom_state(
+                int(match.group(1)), int(match.group(2))
+            )
+
+        match = re.fullmatch(r"/api/roms/(\d+)/states/upload", path)
+        if method == "POST" and match:
+            data = body or {}
+            return 200, JSON, self.upload_rom_state(
+                int(match.group(1)), str(data.get("name") or "")
+            )
+
         match = re.fullmatch(r"/api/roms/(\d+)/saves/restore", path)
         if method == "POST" and match:
             data = body or {}
@@ -1316,6 +1334,34 @@ class App:
     def rom_saves(self, rom_id: int) -> dict[str, Any]:
         rom, mapping, emu_root = self._saves_context(rom_id)
         return self.save_sync.saves_for(rom, mapping, emu_root, self.client(), self.active_server())
+
+    def rom_states(self, rom_id: int) -> dict[str, Any]:
+        rom, mapping, emu_root = self._saves_context(rom_id)
+        return list_states(rom, mapping, emu_root, self.client(), self.active_server())
+
+    def download_rom_state(self, rom_id: int, state_id: int) -> dict[str, Any]:
+        self.require_emudeck()
+        rom, mapping, emu_root = self._saves_context(rom_id)
+        try:
+            return download_state(
+                rom, mapping, emu_root, self.client(), self.active_server(), state_id
+            )
+        except StateError as exc:
+            raise HttpError(409, str(exc)) from None
+        except RomMError as exc:
+            raise HttpError(409 if exc.status == 409 else 502, str(exc)) from None
+
+    def upload_rom_state(self, rom_id: int, name: str) -> dict[str, Any]:
+        self.require_emudeck()
+        rom, mapping, emu_root = self._saves_context(rom_id)
+        try:
+            return upload_state(
+                rom, mapping, emu_root, self.client(), self.active_server(), name
+            )
+        except StateError as exc:
+            raise HttpError(409, str(exc)) from None
+        except RomMError as exc:
+            raise HttpError(409 if exc.status == 409 else 502, str(exc)) from None
 
     def restore_rom_save(self, rom_id: int, save_id: int, play: bool) -> dict[str, Any]:
         self.require_emudeck()

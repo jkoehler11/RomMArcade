@@ -70,8 +70,11 @@ class FakeRomM(BaseHTTPRequestHandler):
     # Save-sync simulation: absent (no API), download, upload, conflict, noop.
     save_mode = "absent"
     save_bytes = b"SAVE-FROM-SERVER"
+    state_bytes = b"STATE-FROM-SERVER"
     uploaded = []
     upload_queries = []
+    state_uploaded = []
+    state_upload_queries = []
     confirmed = []
     deleted = []
     flags = []
@@ -82,8 +85,11 @@ class FakeRomM(BaseHTTPRequestHandler):
     def reset_saves(cls, mode="download"):
         cls.save_mode = mode
         cls.save_bytes = b"SAVE-FROM-SERVER"
+        cls.state_bytes = b"STATE-FROM-SERVER"
         cls.uploaded = []
         cls.upload_queries = []
+        cls.state_uploaded = []
+        cls.state_upload_queries = []
         cls.confirmed = []
         cls.deleted = []
         cls.flags = []
@@ -100,6 +106,25 @@ class FakeRomM(BaseHTTPRequestHandler):
             "content_hash": hashlib.md5(cls.save_bytes, usedforsecurity=False).hexdigest(),
             "updated_at": "2026-11-26T12:00:00+00:00",
             "created_at": "2026-11-26T11:00:00+00:00",
+            "is_favorite": False,
+            "labels": [],
+            "is_public": False,
+            "missing_from_fs": False,
+        }
+        row.update(overrides)
+        return row
+
+    @classmethod
+    def state_row(cls, **overrides):
+        row = {
+            "id": 950,
+            "rom_id": 180,
+            "file_name": "1942 (Japan, USA) [2026-11-26 12-00-00-000].state",
+            "emulator": "mesen",
+            "core": "mesen",
+            "file_size_bytes": len(cls.state_bytes),
+            "created_at": "2026-11-26T11:00:00+00:00",
+            "updated_at": "2026-11-26T12:00:00+00:00",
             "is_favorite": False,
             "labels": [],
             "is_public": False,
@@ -200,6 +225,18 @@ class FakeRomM(BaseHTTPRequestHandler):
             if not entry:
                 return self._json(404, {"detail": "no such save"})
             return self._bytes(200, entry["data"], "application/octet-stream", entry["name"])
+        if path == "/api/states":
+            if query.get("rom_id") and query["rom_id"][0] != "180":
+                return self._json(200, [])
+            rows = [self.state_row()]
+            for entry in reversed(self.state_uploaded):
+                rows.insert(0, entry["row"])
+            return self._json(200, rows)
+        if path == "/api/states/950":
+            return self._json(200, self.state_row())
+        if path.startswith("/api/states/950/content"):
+            return self._bytes(200, self.state_bytes, "application/octet-stream",
+                               "1942 (Japan, USA) [2026-11-26 12-00-00-000].state")
         return self._json(404, {"detail": "no such endpoint " + path})
 
     def do_POST(self):
@@ -229,6 +266,16 @@ class FakeRomM(BaseHTTPRequestHandler):
         if path == "/api/firmware/delete":
             self.firmware_deleted.append(body)
             return self._json(200, {"success": True})
+        if path == "/api/states":
+            name, data = raw if isinstance(raw, tuple) else ("state.state", b"")
+            self.state_upload_queries.append({"query": query, "name": name, "data": data})
+            row = self.state_row(
+                id=951 + len(self.state_uploaded),
+                file_name=name or "state.state",
+                file_size_bytes=len(data),
+            )
+            self.state_uploaded.append({"row": row, "data": data, "name": name or "state.state"})
+            return self._json(200, row)
         if path == "/api/sync/negotiate":
             if self.save_mode == "absent":
                 return self._json(404, {"detail": "no such endpoint " + path})
@@ -1119,7 +1166,7 @@ class IntegrationTests(unittest.TestCase):
 
     def test_14_uninstall_with_saves(self):
         saves = os.path.join(self.emu, "saves/retroarch/saves")
-        states = os.path.join(self.emu, "states/retroarch/states")
+        states = os.path.join(self.emu, "saves/retroarch/states")
         os.makedirs(saves, exist_ok=True)
         os.makedirs(states, exist_ok=True)
         save_file = os.path.join(saves, "1942 (Japan, USA).srm")
@@ -1169,9 +1216,10 @@ class SaveManagementTests(unittest.TestCase):
         open(os.path.join(os.environ["HOME"], ".var/app/org.libretro.RetroArch/config/retroarch/cores/mesen_libretro.so"), "w").close()
 
         cls.emu = os.path.join(cls.tmp, "Emulation")
-        for sub in ("roms/nes", "saves/retroarch/saves", "bios", "tools/launchers"):
+        for sub in ("roms/nes", "saves/retroarch/saves", "saves/retroarch/states", "bios", "tools/launchers"):
             os.makedirs(os.path.join(cls.emu, sub), exist_ok=True)
         cls.save_dir = os.path.join(cls.emu, "saves/retroarch/saves")
+        cls.state_dir = os.path.join(cls.emu, "saves/retroarch/states")
         cls.marker = os.path.join(cls.tmp, "launch-save.txt")
         cls.args_file = os.path.join(cls.tmp, "launcher-args.txt")
         launcher = os.path.join(cls.emu, "tools/launchers/retroarch.sh")
@@ -1214,6 +1262,9 @@ class SaveManagementTests(unittest.TestCase):
         FakeRomM.reset_saves("download")
         for name in os.listdir(self.save_dir):
             path = os.path.join(self.save_dir, name)
+            shutil.rmtree(path, ignore_errors=True) if os.path.isdir(path) else os.unlink(path)
+        for name in os.listdir(self.state_dir):
+            path = os.path.join(self.state_dir, name)
             shutil.rmtree(path, ignore_errors=True) if os.path.isdir(path) else os.unlink(path)
         state_file = os.path.join(os.environ["ROMARCADE_HOME"], "save-sync.json")
         if os.path.exists(state_file):
@@ -1354,6 +1405,38 @@ class SaveManagementTests(unittest.TestCase):
         self.assertIn("not implemented", save_unsupported_reason({"launcher": "dolphin-emu"}))
         self.assertIn("not implemented", save_unsupported_reason({"launcher": "ryujinx"}))
         self.assertEqual(save_unsupported_reason({"launcher": "retroarch"}), "")
+
+    def test_16_save_states_list_download_and_upload(self):
+        FakeRomM.reset_saves("download")
+        state_file = os.path.join(self.state_dir, "1942 (Japan, USA).state")
+        try:
+            os.unlink(state_file)
+        except FileNotFoundError:
+            pass
+        status, panel = self.call("/api/roms/180/states")
+        self.assertEqual(status, 200, panel)
+        self.assertEqual(panel["root"], self.state_dir)
+        self.assertEqual([row["file_name"] for row in panel["server"]],
+                         ["1942 (Japan, USA) [2026-11-26 12-00-00-000].state"])
+        self.assertEqual(panel["local"], [])
+
+        status, downloaded = self.call("/api/roms/180/states/950/download", "POST", {})
+        self.assertEqual(status, 200, downloaded)
+        self.assertEqual(downloaded["file"], "1942 (Japan, USA).state")
+        self.assertEqual(downloaded["path"], state_file)
+        with open(state_file, "rb") as handle:
+            self.assertEqual(handle.read(), FakeRomM.state_bytes)
+        _, panel = self.call("/api/roms/180/states")
+        self.assertEqual([row["name"] for row in panel["local"]],
+                         ["1942 (Japan, USA).state"])
+        self.assertTrue(panel["server"][0]["here"])
+
+        status, uploaded = self.call("/api/roms/180/states/upload", "POST",
+                                     {"name": "1942 (Japan, USA).state"})
+        self.assertEqual(status, 200, uploaded)
+        self.assertEqual(FakeRomM.state_uploaded[-1]["data"], FakeRomM.state_bytes)
+        self.assertEqual(FakeRomM.state_upload_queries[-1]["query"]["emulator"], ["retroarch"])
+        self.assertEqual(FakeRomM.state_upload_queries[-1]["query"]["core"], ["mesen"])
 
     def test_10_create_a_sync_slot_seeds_it(self):
         with open(os.path.join(self.save_dir, "1942 (Japan, USA).srm"), "wb") as handle:
